@@ -229,7 +229,8 @@ class ExtensionStoreRepositoryImpl(
                 extensionListUrl = null,
             ),
             ExtensionStore(
-                indexUrl = "https://raw.githubusercontent.com/lnreader/lnreader-plugins/plugins/v3.0.0/.dist/plugins.min.json",
+                indexUrl = "https://raw.githubusercontent.com/lnreader/lnreader-plugins/" +
+                    "plugins/v3.0.0/.dist/plugins.min.json",
                 name = "LNReader (Novels)",
                 badgeLabel = "LNReader",
                 signingKey = "LNREADER_BUILTIN_NOVELS",
