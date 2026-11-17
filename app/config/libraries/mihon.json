@@ -1,0 +1,20 @@
+{
+  "uniqueId": "app.mihon:mihon",
+  "name": "Mihon",
+  "description": "Free and open source manga reader for Android. Luxi is built on Mihon.",
+  "website": "https://mihon.app",
+  "developers": [
+    {
+      "name": "Javier Tomás"
+    },
+    {
+      "name": "Mihon Open Source Project"
+    }
+  ],
+  "scm": {
+    "url": "https://github.com/mihonapp/mihon"
+  },
+  "licenses": [
+    "Apache-2.0"
+  ]
+}
