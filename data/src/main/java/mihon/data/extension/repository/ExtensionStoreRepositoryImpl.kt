@@ -55,22 +55,6 @@ class ExtensionStoreRepositoryImpl(
             replay = 1,
         )
 
-    init {
-        scope.launch(Dispatchers.IO) {
-            try {
-                database.transaction {
-                    BUILTIN_STORES.forEach { store ->
-                        if (!database.extension_storeQueries.contains(store.indexUrl).awaitAsOne()) {
-                            upsert(store)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                logcat(LogPriority.ERROR, e) { "Failed to seed built-in extension stores" }
-            }
-        }
-    }
-
     override suspend fun insert(indexUrl: String): Result<Unit> {
         return service.fetch(indexUrl).mapCatching { upsert(it) }
     }
@@ -189,58 +173,4 @@ class ExtensionStoreRepositoryImpl(
         isLegacy = isLegacy,
         extensionListUrl = extensionListUrl,
     )
-
-    companion object {
-        private val BUILTIN_STORES = listOf(
-            ExtensionStore(
-                indexUrl = "https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json",
-                name = "Keiyoushi (Manga)",
-                badgeLabel = "Keiyoushi",
-                signingKey = "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
-                contact = ExtensionStore.Contact(
-                    website = "https://keiyoushi.github.io",
-                    discord = null,
-                ),
-                isLegacy = true,
-                extensionListUrl = null,
-            ),
-            ExtensionStore(
-                indexUrl = "https://kohiden.xyz/Kohi-den/extensions/raw/branch/main/repo.json",
-                name = "Kohi-den (Anime & Movies)",
-                badgeLabel = "Kohi-den",
-                signingKey = "cbec121aa82ebb02aaa73806992e0368a97d47b5451ed6524816d03084c45905",
-                contact = ExtensionStore.Contact(
-                    website = "https://kohiden.xyz/Kohi-den/extensions",
-                    discord = null,
-                ),
-                isLegacy = true,
-                extensionListUrl = null,
-            ),
-            ExtensionStore(
-                indexUrl = "https://raw.githubusercontent.com/yuzono/anime-repo/repo/repo.json",
-                name = "Yuzono (Anime & Movies)",
-                badgeLabel = "Yuzono",
-                signingKey = "3b4f7d953a86b3e1f1e3522563c202a177396c41c24e4c70a835a15f87373270",
-                contact = ExtensionStore.Contact(
-                    website = "https://yuzono.github.io",
-                    discord = null,
-                ),
-                isLegacy = true,
-                extensionListUrl = null,
-            ),
-            ExtensionStore(
-                indexUrl = "https://raw.githubusercontent.com/lnreader/lnreader-plugins/" +
-                    "plugins/v3.0.0/.dist/plugins.min.json",
-                name = "LNReader (Novels)",
-                badgeLabel = "LNReader",
-                signingKey = "LNREADER_BUILTIN_NOVELS",
-                contact = ExtensionStore.Contact(
-                    website = "https://github.com/LNReader/lnreader-plugins",
-                    discord = null,
-                ),
-                isLegacy = true,
-                extensionListUrl = null,
-            ),
-        )
-    }
 }
