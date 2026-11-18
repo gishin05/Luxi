@@ -54,7 +54,7 @@ android {
         }
     }
 
-    if (System.getenv("MIHON_GITHUB_RELEASE").toBoolean()) {
+    if (System.getenv("LUXI_GITHUB_RELEASE").toBoolean() && !System.getenv("storePassword").isNullOrEmpty()) {
         signingConfigs {
             named("debug") {
                 storeFile = file(System.getenv("storeFile"))
@@ -377,7 +377,7 @@ apollo {
             // Kitsu doesn't like requests without a UA
             headers.put(
                 "User-Agent",
-                "Mihon v${android.defaultConfig.versionName} (${android.defaultConfig.applicationId})",
+                "Luxi v${android.defaultConfig.versionName} (${android.defaultConfig.applicationId})",
             )
             endpointUrl.set("https://kitsu.app/api/graphql")
             schemaFile.set(file("$srcDir/kitsu.graphqls"))

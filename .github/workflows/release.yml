@@ -5,7 +5,7 @@ on:
       - v*
 
 env:
-  MIHON_GITHUB_RELEASE: true
+  LUXI_GITHUB_RELEASE: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
