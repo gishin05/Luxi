@@ -38,7 +38,6 @@ import mihon.icons.materialsymbols.rounded.Code
 import mihon.icons.materialsymbols.rounded.CollectionsBookmark
 import mihon.icons.materialsymbols.rounded.Download
 import mihon.icons.materialsymbols.rounded.Explore
-import mihon.icons.materialsymbols.rounded.Home
 import mihon.icons.materialsymbols.rounded.Info
 import mihon.icons.materialsymbols.rounded.Palette
 import mihon.icons.materialsymbols.rounded.Search
@@ -207,12 +206,6 @@ object SettingsMainScreen : Screen() {
             subtitleRes = MR.strings.pref_browse_summary,
             icon = MaterialSymbols.Rounded.Explore,
             screen = SettingsBrowseScreen,
-        ),
-        Item(
-            titleRes = MR.strings.pref_category_home,
-            subtitleRes = MR.strings.pref_home_summary,
-            icon = MaterialSymbols.Rounded.Home,
-            screen = SettingsHomeScreen,
         ),
         Item(
             titleRes = MR.strings.label_data_storage,

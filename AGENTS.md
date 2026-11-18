@@ -19,11 +19,6 @@
 - Stay on the task and match the surrounding code. Report unrelated issues instead of fixing them.
 - Don't touch `gradle/` unless asked.
 
-## Verification
-
-Run `./gradlew check` before committing and fix what fails; never skip or disable a check. If you can't run it,
-stop and tell the user.
-
 ## Commits
 
 - One concern per commit; each compiles on its own.

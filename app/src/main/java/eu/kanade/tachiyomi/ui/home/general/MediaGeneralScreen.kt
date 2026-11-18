@@ -61,6 +61,7 @@ import mihon.icons.materialsymbols.rounded.Verified
 import mihon.icons.materialsymbols.roundedfilled.Favorite
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.manga.model.asMangaCover
+import tachiyomi.domain.source.interactor.GetRemoteManga
 import tachiyomi.domain.source.model.MediaType
 import tachiyomi.presentation.core.components.material.Scaffold
 import tachiyomi.presentation.core.components.material.padding
@@ -324,7 +325,14 @@ class MediaGeneralScreen(
                         ) { drawer ->
                             SourceDrawerRow(
                                 drawer = drawer,
-                                onViewMoreClick = { navigator.push(BrowseSourceScreen(drawer.source.id)) },
+                                onViewMoreClick = {
+                                    val listingQuery = if (drawer.source.supportsLatest) {
+                                        GetRemoteManga.QUERY_LATEST
+                                    } else {
+                                        GetRemoteManga.QUERY_POPULAR
+                                    }
+                                    navigator.push(BrowseSourceScreen(drawer.source.id, listingQuery))
+                                },
                                 onItemClick = { manga -> navigator.push(MangaScreen(manga.id, true)) },
                                 onLoadMore = { viewModel.loadMoreForDrawer(drawer.source.id) },
                             )

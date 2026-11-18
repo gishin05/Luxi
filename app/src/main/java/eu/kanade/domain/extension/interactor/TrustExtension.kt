@@ -20,8 +20,8 @@ class TrustExtension(
 ) {
 
     fun isTrusted(pkgInfo: PackageInfo, fingerprints: List<String>, stores: List<ExtensionStore>): Boolean {
-        if (pkgInfo.packageName == "eu.kanade.tachiyomi.extension.en.comix") return true
         val trustedFingerprints = stores.mapTo(HashSet()) { it.signingKey }
+        trustedFingerprints += LUXI_SIGNING_KEY
         trustedFingerprints += KEIYOUSHI_SIGNING_KEY
         trustedFingerprints += KOHIDEN_SIGNING_KEY
         trustedFingerprints += YUZONO_SIGNING_KEY
@@ -63,6 +63,7 @@ class TrustExtension(
     }
 
     private companion object {
+        const val LUXI_SIGNING_KEY = "8bf8a0a410d83a1d23de76f89da5cfedf3f1d867f5f575a078c4e42a5cb9aee2"
         const val KEIYOUSHI_SIGNING_KEY = "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2"
         const val KOHIDEN_SIGNING_KEY = "cbec121aa82ebb02aaa73806992e0368a97d47b5451ed6524816d03084c45905"
         const val YUZONO_SIGNING_KEY = "3b4f7d953a86b3e1f1e3522563c202a177396c41c24e4c70a835a15f87373270"
