@@ -42,6 +42,8 @@ class SourcePreferences(
 
     val defaultSourcesPinned: Preference<Boolean> = preferenceStore.getBoolean("default_sources_pinned", false)
 
+    val builtinComixRestored: Preference<Boolean> = preferenceStore.getBoolean("builtin_comix_restored_v1", false)
+
     val lastUsedSource: Preference<Long> = preferenceStore.getLong(
         Preference.appStateKey("last_catalogue_source"),
         -1,

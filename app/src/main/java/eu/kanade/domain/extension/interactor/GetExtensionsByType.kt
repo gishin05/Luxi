@@ -5,6 +5,7 @@ import eu.kanade.domain.extension.model.Extensions
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.extension.model.Extension
+import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 
@@ -33,7 +34,8 @@ class GetExtensionsByType(
             val installedSignatures = (_loaded + _notLoaded).groupBy({ it.pkgName }, { it.signatures })
             val available = _available
                 .filter { extension ->
-                    installedSignatures[extension.pkgName].orEmpty().none { extension.store.signingKey in it } &&
+                    !ExtensionLoader.isProtectedBuiltIn(extension.pkgName) &&
+                        installedSignatures[extension.pkgName].orEmpty().none { extension.store.signingKey in it } &&
                         extension.contentWarning in enabledContentWarnings
                 }
                 .flatMap { ext ->

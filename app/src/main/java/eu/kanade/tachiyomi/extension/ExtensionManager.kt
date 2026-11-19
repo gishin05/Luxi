@@ -310,6 +310,7 @@ class ExtensionManager(
      * @param extension The extension to uninstall.
      */
     fun uninstallExtension(extension: Extension.Installed) {
+        if (ExtensionLoader.isProtectedBuiltIn(extension.pkgName)) return
         installer.uninstallApk(extension.pkgName)
     }
 
@@ -365,6 +366,24 @@ class ExtensionManager(
         }
 
         override suspend fun onPackageUninstalled(pkgName: String) = loadMutex.withLock {
+            if (ExtensionLoader.isProtectedBuiltIn(pkgName)) {
+                ExtensionLoader.installBundledExtensions(context)
+                when (val extension = ExtensionLoader.loadExtensionFromPkgName(context, pkgName)) {
+                    is Extension.Loaded -> {
+                        registerExtension(extension)
+                        notLoadedExtensionMapFlow.update { it - extension.pkgName }
+                        refreshStatuses()
+                    }
+                    is Extension.NotLoaded -> {
+                        loadedExtensionMapFlow.update { it - extension.pkgName }
+                        notLoadedExtensionMapFlow.update { it + extension }
+                        refreshStatuses()
+                    }
+                    null -> Unit
+                }
+                updatePendingUpdatesCount()
+                return@withLock
+            }
             ExtensionLoader.uninstallPrivateExtension(context, pkgName)
             unregisterExtension(pkgName)
             updatePendingUpdatesCount()
@@ -380,18 +399,20 @@ class ExtensionManager(
         if (available.isNotEmpty()) {
             loadedExtensionMapFlow.update { current ->
                 current.mapValues { (_, extension) ->
+                    val isBuiltIn = ExtensionLoader.isProtectedBuiltIn(extension.pkgName)
                     val listing = extension.findListing(available)
                     extension.copy(
-                        hasUpdate = extension.findUpdate(available) != null,
-                        isObsolete = listing == null && extension.sources.none { it is AnimeMediaSource },
+                        hasUpdate = !isBuiltIn && extension.findUpdate(available) != null,
+                        isObsolete = !isBuiltIn && listing == null && extension.sources.none { it is AnimeMediaSource },
                         store = if (stores.isEmpty()) extension.store else extension.pickStore(),
                     )
                 }
             }
             notLoadedExtensionMapFlow.update { current ->
                 current.mapValues { (_, extension) ->
+                    val isBuiltIn = ExtensionLoader.isProtectedBuiltIn(extension.pkgName)
                     extension.copy(
-                        hasUpdate = extension.findUpdate(available) != null,
+                        hasUpdate = !isBuiltIn && extension.findUpdate(available) != null,
                         store = if (stores.isEmpty()) extension.store else extension.pickStore(),
                     )
                 }

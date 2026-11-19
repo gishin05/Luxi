@@ -18,6 +18,7 @@ import eu.kanade.presentation.components.AppBar
 import eu.kanade.presentation.components.TabContent
 import eu.kanade.presentation.more.settings.screen.browse.ExtensionStoresScreen
 import eu.kanade.tachiyomi.extension.model.Extension
+import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import eu.kanade.tachiyomi.ui.browse.extension.details.ExtensionDetailsScreen
 import eu.kanade.tachiyomi.ui.webview.WebViewScreen
 import eu.kanade.tachiyomi.util.system.isPackageInstalled
@@ -63,10 +64,12 @@ fun extensionsTab(
                     when (extension) {
                         is Extension.Available -> extensionsViewModel.installExtension(extension)
                         is Extension.Installed -> {
-                            if (context.isPackageInstalled(extension.pkgName)) {
-                                extensionsViewModel.uninstallExtension(extension)
-                            } else {
-                                privateExtensionToUninstall = extension
+                            if (!ExtensionLoader.isProtectedBuiltIn(extension.pkgName)) {
+                                if (context.isPackageInstalled(extension.pkgName)) {
+                                    extensionsViewModel.uninstallExtension(extension)
+                                } else {
+                                    privateExtensionToUninstall = extension
+                                }
                             }
                         }
                     }

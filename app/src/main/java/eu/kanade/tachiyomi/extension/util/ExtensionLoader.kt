@@ -76,10 +76,18 @@ internal object ExtensionLoader {
 
     private const val PRIVATE_EXTENSION_EXTENSION = "ext"
 
+    const val BUILTIN_COMIX_PKG = "eu.kanade.tachiyomi.extension.en.comix"
+    private val PROTECTED_BUILTIN_EXTENSIONS = setOf(BUILTIN_COMIX_PKG)
+
+    fun isProtectedBuiltIn(pkgName: String): Boolean = pkgName in PROTECTED_BUILTIN_EXTENSIONS
+
     private fun getPrivateExtensionDir(context: Context) = File(context.filesDir, "exts")
 
     fun installPrivateExtensionFile(context: Context, file: File, extension: PackageInfo) {
         check(isPackageAnExtension(extension)) { "${extension.packageName} isn't an extension" }
+        check(!isProtectedBuiltIn(extension.packageName)) {
+            "Built-in extension ${extension.packageName} cannot be replaced"
+        }
         val currentExtension = getExtensionPackageInfoFromPkgName(context, extension.packageName)
 
         if (currentExtension != null) {
@@ -111,6 +119,7 @@ internal object ExtensionLoader {
     }
 
     fun uninstallPrivateExtension(context: Context, pkgName: String) {
+        if (isProtectedBuiltIn(pkgName)) return
         File(getPrivateExtensionDir(context), "$pkgName.$PRIVATE_EXTENSION_EXTENSION").delete()
     }
 
@@ -127,7 +136,7 @@ internal object ExtensionLoader {
         }
     }
 
-    private fun installBundledExtensions(context: Context): Set<String> {
+    fun installBundledExtensions(context: Context): Set<String> {
         val assetManager = context.assets
         val extsDir = getPrivateExtensionDir(context)
         extsDir.mkdirs()
@@ -225,7 +234,12 @@ internal object ExtensionLoader {
             .mapNotNull { sharedPkg ->
                 val pkgName = sharedPkg.packageInfo.packageName
                 val privatePkg = privateExtPkgsByName[pkgName]?.singleOrNull()
-                selectExtensionPackage(sharedPkg, privatePkg, preferPrivate = pkgName in bundledPkgNames)
+                selectExtensionPackage(
+                    shared = sharedPkg,
+                    private = privatePkg,
+                    preferPrivate = pkgName in bundledPkgNames,
+                    forcePrivate = isProtectedBuiltIn(pkgName),
+                )
             }
             .toList()
 
@@ -310,6 +324,7 @@ internal object ExtensionLoader {
             shared = sharedPkg,
             private = privatePkg,
             preferPrivate = pkgName in getBundledExtensionPackageNames(context),
+            forcePrivate = isProtectedBuiltIn(pkgName),
         )
     }
 
@@ -473,7 +488,9 @@ internal object ExtensionLoader {
             return notLoaded(Extension.NotLoaded.Reason.Untrusted(signatures.last()), libVersion)
         }
 
-        if (applyContentWarningsToInstalled && contentWarning !in enabledContentWarnings) {
+        if (!isProtectedBuiltIn(pkgName) && applyContentWarningsToInstalled &&
+            contentWarning !in enabledContentWarnings
+        ) {
             logcat(LogPriority.WARN) { "Extension $pkgName with $contentWarning not allowed" }
             return notLoaded(Extension.NotLoaded.Reason.Filtered, libVersion)
         }
@@ -565,7 +582,9 @@ internal object ExtensionLoader {
         shared: ExtensionInfo?,
         private: ExtensionInfo?,
         preferPrivate: Boolean = false,
+        forcePrivate: Boolean = false,
     ): ExtensionInfo? {
+        if (forcePrivate && private != null) return private
         when {
             private == null && shared != null -> return shared
             shared == null && private != null -> return private

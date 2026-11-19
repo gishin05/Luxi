@@ -50,6 +50,7 @@ import eu.kanade.presentation.components.WarningBanner
 import eu.kanade.presentation.more.settings.widget.TextPreferenceWidget
 import eu.kanade.presentation.more.settings.widget.TrailingWidgetBuffer
 import eu.kanade.tachiyomi.extension.model.Extension
+import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.ui.browse.extension.details.ExtensionDetailsViewModel
 import eu.kanade.tachiyomi.util.system.LocaleHelper
@@ -202,6 +203,7 @@ private fun DetailsHeader(
 ) {
     val context = LocalContext.current
     val contentWarning = extension.contentWarning.label
+    val isBuiltIn = ExtensionLoader.isProtectedBuiltIn(extension.pkgName)
 
     Column {
         Column(
@@ -277,7 +279,12 @@ private fun DetailsHeader(
                 )
             }
 
-            if ((extension as? Extension.Loaded)?.isShared == false) {
+            if (isBuiltIn) {
+                ExtensionPill(
+                    text = "Built-in",
+                    modifier = Modifier.padding(top = MaterialTheme.padding.small),
+                )
+            } else if ((extension as? Extension.Loaded)?.isShared == false) {
                 ExtensionPill(
                     text = stringResource(MR.strings.ext_installer_private),
                     modifier = Modifier.padding(top = MaterialTheme.padding.small),
@@ -322,25 +329,29 @@ private fun DetailsHeader(
             }
         }
 
-        Row(
-            modifier = Modifier
-                .padding(horizontal = MaterialTheme.padding.medium)
-                .padding(top = MaterialTheme.padding.small),
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.padding.medium),
-        ) {
-            OutlinedButton(
-                modifier = Modifier.weight(1f),
-                onClick = onClickUninstall,
+        if (!isBuiltIn || onClickAppInfo != null) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = MaterialTheme.padding.medium)
+                    .padding(top = MaterialTheme.padding.small),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.padding.medium),
             ) {
-                Text(stringResource(MR.strings.ext_uninstall))
-            }
+                if (!isBuiltIn) {
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onClickUninstall,
+                    ) {
+                        Text(stringResource(MR.strings.ext_uninstall))
+                    }
+                }
 
-            if (onClickAppInfo != null) {
-                Button(
-                    modifier = Modifier.weight(1f),
-                    onClick = onClickAppInfo,
-                ) {
-                    Text(stringResource(MR.strings.ext_app_info))
+                if (onClickAppInfo != null) {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = onClickAppInfo,
+                    ) {
+                        Text(stringResource(MR.strings.ext_app_info))
+                    }
                 }
             }
         }

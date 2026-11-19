@@ -4,6 +4,7 @@ import android.content.pm.PackageInfo
 import androidx.core.content.pm.PackageInfoCompat
 import dev.zacsweers.metro.Inject
 import eu.kanade.domain.source.service.SourcePreferences
+import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -20,6 +21,7 @@ class TrustExtension(
 ) {
 
     fun isTrusted(pkgInfo: PackageInfo, fingerprints: List<String>, stores: List<ExtensionStore>): Boolean {
+        if (ExtensionLoader.isProtectedBuiltIn(pkgInfo.packageName)) return true
         val trustedFingerprints = stores.mapTo(HashSet()) { it.signingKey }
         trustedFingerprints += LUXI_SIGNING_KEY
         trustedFingerprints += KEIYOUSHI_SIGNING_KEY

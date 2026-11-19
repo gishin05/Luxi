@@ -8,6 +8,7 @@ import dev.zacsweers.metro.SingleIn
 import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.extension.ExtensionManager
+import eu.kanade.tachiyomi.extension.util.ExtensionLoader
 import eu.kanade.tachiyomi.source.novel.LNReaderSourceManager
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.CoroutineScope
@@ -90,6 +91,15 @@ class AndroidSourceManager(
                     }
                     sourcePreferences.pinnedSources.getAndSet { it + defaultPinIds }
                     sourcePreferences.defaultSourcesPinned.set(true)
+                }
+                if (!sourcePreferences.builtinComixRestored.get()) {
+                    val comixExtension = extensions.firstOrNull { it.pkgName == ExtensionLoader.BUILTIN_COMIX_PKG }
+                    if (comixExtension != null && comixExtension.sources.isNotEmpty()) {
+                        val comixSourceIds = comixExtension.sources.mapTo(HashSet()) { "${it.id}" }
+                        sourcePreferences.disabledSources.getAndSet { it - comixSourceIds }
+                        sourcePreferences.pinnedSources.getAndSet { it + comixSourceIds }
+                        sourcePreferences.builtinComixRestored.set(true)
+                    }
                 }
                 sourcesMapFlow.value = mutableMap
             }
