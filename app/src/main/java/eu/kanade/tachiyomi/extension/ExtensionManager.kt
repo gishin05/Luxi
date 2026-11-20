@@ -426,7 +426,9 @@ class ExtensionManager(
      * than whichever of them was added first.
      */
     private fun Extension.Installed.pickStore(): ExtensionStore? {
-        val signingStores = stores.filter { it.signingKey in signatures }
+        val signingStores = stores.filter { store ->
+            signatures.any { it.equals(store.signingKey, ignoreCase = true) }
+        }
         val listedBy = availableExtensionListFlow.value
             .filter { it.pkgName == pkgName }
             .mapTo(HashSet()) { it.store.indexUrl }

@@ -27,12 +27,17 @@ data class NetworkLegacyExtension(
     )
 
     fun toAvailableExtension(store: ExtensionStore, storeBaseUrl: String): Extension.Available {
+        val libVersion = if (pkg.contains(".animeextension.")) {
+            version.substringBefore('.').toDoubleOrNull() ?: 14.0
+        } else {
+            version.substringBeforeLast('.').toDoubleOrNull() ?: 1.4
+        }
         return Extension.Available(
             name = name.substringAfter("Tachiyomi: ").substringAfter("Aniyomi: "),
             pkgName = pkg,
             apkUrl = "$storeBaseUrl/apk/$apk",
             iconUrl = "$storeBaseUrl/icon/$pkg.png",
-            libVersion = version.substringBeforeLast('.').toDoubleOrNull() ?: 1.4,
+            libVersion = libVersion,
             versionCode = code,
             versionName = version,
             lang = lang,

@@ -12,6 +12,7 @@ import dev.zacsweers.metro.ContributesIntoMap
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ManualViewModelAssistedFactoryKey
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.source.CoverHttpSource
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.system.openInBrowser
 import eu.kanade.tachiyomi.util.system.toShareIntent
@@ -46,9 +47,11 @@ class WebViewViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            val source = sourceId?.let { sourceManager.get(it) as? HttpSource }
+            val source = sourceId?.let { sourceManager.get(it) }
             headers.value = try {
-                source?.headers?.toWebViewHeaders().orEmpty()
+                val sourceHeaders = (source as? HttpSource)?.headers
+                    ?: (source as? CoverHttpSource)?.coverHeaders
+                sourceHeaders?.toWebViewHeaders().orEmpty()
             } catch (e: Exception) {
                 logcat(LogPriority.ERROR, e) { "Failed to build headers" }
                 emptyMap()

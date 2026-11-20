@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import mihon.domain.manga.model.toDomainManga
+import mihon.domain.source.interactor.ComixRequestGate
 import tachiyomi.domain.manga.interactor.NetworkToLocalManga
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.MediaType
@@ -244,7 +245,11 @@ class HomeViewModel(
 
     private suspend fun fetchSourceItems(source: CatalogueSource, contentRating: String): List<Manga> {
         return try {
-            val mangasPage = source.getPopularManga(1)
+            val mangasPage = if (ComixRequestGate.isComix(source)) {
+                ComixRequestGate.withPacing { source.getPopularManga(1) }
+            } else {
+                source.getPopularManga(1)
+            }
             val domainMangas = mangasPage.mangas
                 .asSequence()
                 .map { it.toDomainManga(source.id) }

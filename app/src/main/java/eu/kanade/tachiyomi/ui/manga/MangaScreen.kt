@@ -37,6 +37,7 @@ import eu.kanade.presentation.util.AssistContentScreen
 import eu.kanade.presentation.util.Screen
 import eu.kanade.presentation.util.isTabletUi
 import eu.kanade.tachiyomi.source.Source
+import eu.kanade.tachiyomi.source.anime.AnimeSourceAdapter
 import eu.kanade.tachiyomi.source.isLocalOrStub
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.browse.source.browse.BrowseSourceScreen
@@ -94,7 +95,9 @@ class MangaScreen(
         }
 
         val successState = state as MangaViewModel.State.Success
-        val isHttpSource = remember { successState.source is HttpSource }
+        val isHttpSource = remember(successState.source) {
+            successState.source is HttpSource || (successState.source as? AnimeSourceAdapter)?.isHttpBacked == true
+        }
 
         LaunchedEffect(successState.manga, viewModel.source) {
             if (isHttpSource) {
@@ -357,10 +360,13 @@ class MangaScreen(
 
     private fun getMangaUrl(manga_: Manga?, source_: Source?): String? {
         val manga = manga_ ?: return null
-        val source = source_ as? HttpSource ?: return null
-
+        val sManga = manga.toSManga()
         return try {
-            source.getMangaUrl(manga.toSManga())
+            when (source_) {
+                is HttpSource -> source_.getMangaUrl(sManga)
+                is AnimeSourceAdapter -> source_.getMangaUrl(sManga)
+                else -> null
+            }
         } catch (e: Exception) {
             null
         }
@@ -427,7 +433,8 @@ class MangaScreen(
         }
 
         val previousController = navigator.items[navigator.size - 2]
-        if (previousController is BrowseSourceScreen && source is HttpSource) {
+        val isHttpSource = source is HttpSource || (source as? AnimeSourceAdapter)?.isHttpBacked == true
+        if (previousController is BrowseSourceScreen && isHttpSource) {
             navigator.pop()
             previousController.searchGenre(genreName)
         } else {
@@ -439,9 +446,7 @@ class MangaScreen(
      * Copy Manga URL to Clipboard
      */
     private fun copyMangaUrl(context: Context, manga_: Manga?, source_: Source?) {
-        val manga = manga_ ?: return
-        val source = source_ as? HttpSource ?: return
-        val url = source.getMangaUrl(manga.toSManga())
+        val url = getMangaUrl(manga_, source_) ?: return
         context.copyToClipboard(url, url)
     }
 }

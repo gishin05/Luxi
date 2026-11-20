@@ -89,7 +89,10 @@ class ExtensionInstaller(
 
                 // The store's index names the apk, but nothing ties what's served there to the store's key
                 val packageInfo = ExtensionLoader.getArchivePackageInfo(context, tmpFile)
-                    ?.takeIf { extension.store.signingKey in ExtensionLoader.getSignatures(it).orEmpty() }
+                    ?.takeIf { pkgInfo ->
+                        ExtensionLoader.getSignatures(pkgInfo).orEmpty()
+                            .any { sig -> sig.equals(extension.store.signingKey, ignoreCase = true) }
+                    }
                 if (packageInfo == null) {
                     tmpFile.delete()
                     throw Exception("Extension isn't signed with the key of ${extension.store.name}")

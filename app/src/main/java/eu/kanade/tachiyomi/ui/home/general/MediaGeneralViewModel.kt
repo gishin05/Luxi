@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import mihon.domain.manga.model.toDomainManga
+import mihon.domain.source.interactor.ComixRequestGate
 import tachiyomi.domain.manga.interactor.NetworkToLocalManga
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.MediaType
@@ -361,18 +362,25 @@ class MediaGeneralViewModel(
         page: Int = 1,
     ): Pair<List<Manga>, Boolean> {
         return try {
-            val mangasPage = when {
-                query.isNotBlank() -> source.getSearchManga(page, query, source.getFilterList())
-                listing == Listing.Popular -> source.getPopularManga(page)
-                else -> if (source.supportsLatest) {
-                    try {
-                        source.getLatestUpdates(page)
-                    } catch (e: Exception) {
+            val fetchPage: suspend () -> eu.kanade.tachiyomi.source.model.MangasPage = {
+                when {
+                    query.isNotBlank() -> source.getSearchManga(page, query, source.getFilterList())
+                    listing == Listing.Popular -> source.getPopularManga(page)
+                    else -> if (source.supportsLatest) {
+                        try {
+                            source.getLatestUpdates(page)
+                        } catch (e: Exception) {
+                            source.getPopularManga(page)
+                        }
+                    } else {
                         source.getPopularManga(page)
                     }
-                } else {
-                    source.getPopularManga(page)
                 }
+            }
+            val mangasPage = if (ComixRequestGate.isComix(source)) {
+                ComixRequestGate.withPacing { fetchPage() }
+            } else {
+                fetchPage()
             }
 
             val rating = sourcePreferences.contentRating.get()

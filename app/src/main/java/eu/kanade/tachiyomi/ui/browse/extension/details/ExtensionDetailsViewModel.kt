@@ -19,6 +19,7 @@ import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.source.anime.AnimeSourceAdapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.system.LocaleHelper
 import kotlinx.coroutines.flow.Flow
@@ -96,8 +97,13 @@ class ExtensionDetailsViewModel(
         val extension = successState?.extension ?: return
 
         val urls = extension.sources
-            .filterIsInstance<HttpSource>()
-            .flatMap { listOf(it.baseUrl, it.getHomeUrl()) }
+            .flatMap { source ->
+                when (source) {
+                    is HttpSource -> listOf(source.baseUrl, source.getHomeUrl())
+                    is AnimeSourceAdapter -> listOfNotNull(source.baseUrl, source.getHomeUrl())
+                    else -> emptyList()
+                }
+            }
             .filter { it.isNotEmpty() }
             .distinct()
 

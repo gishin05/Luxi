@@ -13,9 +13,11 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.ComixProgressBridge
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -89,100 +91,128 @@ class UpdateMangaFromRemote(
             val chapters = chapterRepository.getChapterByMangaId(manga.id)
                 .sortedBy { it.sourceOrder }
 
-            val callbackMutex = Mutex()
-            var currentManga = manga
-            var syncSession: SyncChaptersWithSource.ProgressiveSession? = null
-            var newChapters: List<Chapter> = emptyList()
-            val finalized = AtomicBoolean(false)
-            val receivedProgressChunks = AtomicBoolean(false)
-            var finalDetailsApplied = false
-
+            val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
             val listenComixProgress = !source.isLocal() &&
                 (fetchDetails || fetchChapters) &&
-                (source.name.equals("Comix", ignoreCase = true) || manga.url.contains("/title/", ignoreCase = true))
+                (ComixRequestGate.isComix(source) || manga.url.contains("/title/", ignoreCase = true))
 
-            coroutineScope {
-                val progressChannel = if (listenComixProgress) Channel<String>(Channel.UNLIMITED) else null
-                val unregister = progressChannel?.let { channel ->
-                    ComixProgressBridge.register { rawJson ->
-                        if (!finalized.get()) channel.trySend(rawJson)
+            suspend fun runOnce(): List<Chapter> {
+                val callbackMutex = Mutex()
+                var currentManga = manga
+                var syncSession: SyncChaptersWithSource.ProgressiveSession? = null
+                var newChapters: List<Chapter> = emptyList()
+                val finalized = AtomicBoolean(false)
+                val receivedProgressChunks = AtomicBoolean(false)
+                var finalDetailsApplied = false
+
+                coroutineScope {
+                    val progressChannel = if (listenComixProgress) Channel<String>(Channel.UNLIMITED) else null
+                    val unregister = progressChannel?.let { channel ->
+                        ComixProgressBridge.register { rawJson ->
+                            if (!finalized.get()) channel.trySend(rawJson)
+                        }
                     }
-                }
-                val progressJob = progressChannel?.let { channel ->
-                    val sourcePrefs = context.getSharedPreferences("source_${source.id}", Context.MODE_PRIVATE)
-                    launch(Dispatchers.IO) {
-                        for (rawJson in channel) {
-                            val parsed = parseComixProgress(rawJson, manga.url, sourcePrefs) ?: continue
-                            callbackMutex.withLock {
-                                if (finalized.get()) return@withLock
-                                if (fetchDetails && !finalDetailsApplied && parsed.details != null) {
-                                    awaitUpdateFromSource(currentManga, parsed.details, manualFetch)
+                    val progressJob = progressChannel?.let { channel ->
+                        val sourcePrefs = context.getSharedPreferences("source_${source.id}", Context.MODE_PRIVATE)
+                        launch(Dispatchers.IO) {
+                            for (rawJson in channel) {
+                                val parsed = parseComixProgress(rawJson, manga.url, sourcePrefs) ?: continue
+                                callbackMutex.withLock {
+                                    if (finalized.get()) return@withLock
+                                    if (fetchDetails && !finalDetailsApplied && parsed.details != null) {
+                                        awaitUpdateFromSource(currentManga, parsed.details, manualFetch)
+                                        currentManga = mangaRepository.getMangaById(manga.id)
+                                    }
+                                    if (fetchChapters && parsed.chapters.isNotEmpty()) {
+                                        receivedProgressChunks.set(true)
+                                        val session = syncSession ?: syncChaptersWithSource.startSession(
+                                            manga = currentManga,
+                                            source = source,
+                                            manualFetch = manualFetch,
+                                            fetchWindow = fetchWindow,
+                                        ).also { syncSession = it }
+                                        session.addChunk(parsed.chapters, isFinal = false)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    try {
+                        source.getMangaUpdateProgressively(
+                            manga = manga.toSManga(),
+                            chapters = chapters.map(Chapter::toSChapter),
+                            fetchDetails = fetchDetails,
+                            fetchChapters = fetchChapters,
+                            onDetails = { remoteManga ->
+                                if (!fetchDetails) return@getMangaUpdateProgressively
+                                callbackMutex.withLock {
+                                    finalDetailsApplied = true
+                                    awaitUpdateFromSource(currentManga, remoteManga, manualFetch)
                                     currentManga = mangaRepository.getMangaById(manga.id)
                                 }
-                                if (fetchChapters && parsed.chapters.isNotEmpty()) {
-                                    receivedProgressChunks.set(true)
+                            },
+                            onChaptersChunk = { chunk, isFinal ->
+                                if (!fetchChapters) return@getMangaUpdateProgressively
+                                if (isFinal) {
+                                    finalized.set(true)
+                                    unregister?.invoke()
+                                    progressChannel?.close()
+                                }
+                                callbackMutex.withLock {
                                     val session = syncSession ?: syncChaptersWithSource.startSession(
                                         manga = currentManga,
                                         source = source,
                                         manualFetch = manualFetch,
                                         fetchWindow = fetchWindow,
                                     ).also { syncSession = it }
-                                    session.addChunk(parsed.chapters, isFinal = false)
+                                    val synced = session.addChunk(
+                                        rawSourceChapters = chunk,
+                                        isFinal = isFinal,
+                                        reconcileFinal = isFinal && receivedProgressChunks.get(),
+                                    )
+                                    if (synced != null) {
+                                        newChapters = synced
+                                    }
                                 }
-                            }
-                        }
+                            },
+                        )
+                    } finally {
+                        finalized.set(true)
+                        unregister?.invoke()
+                        progressChannel?.close()
+                        progressJob?.cancel()
                     }
                 }
+                return newChapters
+            }
 
-                try {
-                    source.getMangaUpdateProgressively(
-                        manga = manga.toSManga(),
-                        chapters = chapters.map(Chapter::toSChapter),
-                        fetchDetails = fetchDetails,
-                        fetchChapters = fetchChapters,
-                        onDetails = { remoteManga ->
-                            if (!fetchDetails) return@getMangaUpdateProgressively
-                            callbackMutex.withLock {
-                                finalDetailsApplied = true
-                                awaitUpdateFromSource(currentManga, remoteManga, manualFetch)
-                                currentManga = mangaRepository.getMangaById(manga.id)
-                            }
-                        },
-                        onChaptersChunk = { chunk, isFinal ->
-                            if (!fetchChapters) return@getMangaUpdateProgressively
-                            if (isFinal) {
-                                finalized.set(true)
-                                unregister?.invoke()
-                                progressChannel?.close()
-                            }
-                            callbackMutex.withLock {
-                                val session = syncSession ?: syncChaptersWithSource.startSession(
-                                    manga = currentManga,
-                                    source = source,
-                                    manualFetch = manualFetch,
-                                    fetchWindow = fetchWindow,
-                                ).also { syncSession = it }
-                                val synced = session.addChunk(
-                                    rawSourceChapters = chunk,
-                                    isFinal = isFinal,
-                                    reconcileFinal = isFinal && receivedProgressChunks.get(),
-                                )
-                                if (synced != null) {
-                                    newChapters = synced
-                                }
-                            }
-                        },
-                    )
-                } finally {
-                    finalized.set(true)
-                    unregister?.invoke()
-                    progressChannel?.close()
-                    progressJob?.cancel()
+            suspend fun executeUpdate(): List<Chapter> {
+                return if (isComix) {
+                    ComixRequestGate.withPacing { runOnce() }
+                } else {
+                    runOnce()
                 }
             }
+
+            val newChapters = try {
+                executeUpdate()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (isComix && e.message?.contains("Chapter list is incomplete", ignoreCase = true) == true) {
+                    delay(2_500L)
+                    executeUpdate()
+                } else {
+                    throw e
+                }
+            }
+
             val updatedManga = mangaRepository.getMangaById(manga.id)
 
             Result.success(RemoteMangaUpdate(manga = updatedManga, newChapters = newChapters))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e)
             Result.failure(e)

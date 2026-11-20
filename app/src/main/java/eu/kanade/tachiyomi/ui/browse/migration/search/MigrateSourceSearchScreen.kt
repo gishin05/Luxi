@@ -21,6 +21,7 @@ import dev.zacsweers.metrox.viewmodel.assistedMetroViewModel
 import eu.kanade.presentation.browse.BrowseSourceContent
 import eu.kanade.presentation.components.SearchToolbar
 import eu.kanade.presentation.util.Screen
+import eu.kanade.tachiyomi.source.anime.AnimeSourceAdapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.browse.source.browse.BrowseSourceViewModel
 import eu.kanade.tachiyomi.ui.browse.source.browse.SourceFilterDialog
@@ -110,12 +111,14 @@ data class MigrateSourceSearchScreen(
                 snackbarHostState = snackbarHostState,
                 contentPadding = paddingValues,
                 onWebViewClick = {
-                    val httpSource = source as? HttpSource ?: return@BrowseSourceContent
+                    val homeUrl = (source as? HttpSource)?.getHomeUrl()
+                        ?: (source as? AnimeSourceAdapter)?.getHomeUrl()
+                    val targetUrl = homeUrl?.takeIf { it.isNotBlank() } ?: return@BrowseSourceContent
                     navigator.push(
                         WebViewScreen(
-                            url = httpSource.getHomeUrl(),
-                            initialTitle = httpSource.name,
-                            sourceId = httpSource.id,
+                            url = targetUrl,
+                            initialTitle = source.name,
+                            sourceId = source.id,
                         ),
                     )
                 },

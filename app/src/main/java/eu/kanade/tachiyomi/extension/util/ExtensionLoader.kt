@@ -66,7 +66,20 @@ internal object ExtensionLoader {
     private const val ANIME_METADATA_CONTENT_WARNING = "aniyomix.contentWarning"
 
     private val SUPPORTED_LIB_VERSIONS = listOf(1.4, 1.6)
-    private val ANIME_SUPPORTED_LIB_VERSIONS = listOf(14.0, 16.0, 17.0)
+    private val ANIME_SUPPORTED_LIB_VERSIONS = listOf(12.0, 13.0, 14.0, 15.0, 16.0, 17.0)
+
+    internal fun parseAnimeLibVersion(metaValue: Any?, versionName: String): Double? {
+        val fromMeta = when (metaValue) {
+            is Number -> metaValue.toDouble()
+            is String -> metaValue.trim().toDoubleOrNull()
+            else -> null
+        }?.takeUnless { it == 0.0 }
+        return fromMeta ?: versionName.substringBefore('.').toDoubleOrNull()
+    }
+
+    internal fun isSupportedAnimeLibVersion(libVersion: Double?): Boolean {
+        return libVersion != null && libVersion in ANIME_SUPPORTED_LIB_VERSIONS
+    }
 
     @Suppress("DEPRECATION")
     private val PACKAGE_FLAGS = PackageManager.GET_CONFIGURATIONS or
@@ -364,7 +377,9 @@ internal object ExtensionLoader {
                 isShared = extensionInfo.isShared,
                 contentWarning = ContentWarning.SAFE,
                 signatures = signatures,
-                store = stores.firstOrNull { it.signingKey in signatures },
+                store = stores.firstOrNull { store ->
+                    signatures.any { it.equals(store.signingKey, ignoreCase = true) }
+                },
                 reason = Extension.NotLoaded.Reason.Failed(e.rootMessage, e.stackTraceToString()),
             )
         }
@@ -404,7 +419,9 @@ internal object ExtensionLoader {
         val versionName = pkgInfo.versionName
         val versionCode = PackageInfoCompat.getLongVersionCode(pkgInfo)
         val signatures = getSignatures(pkgInfo).orEmpty()
-        val store = stores.firstOrNull { it.signingKey in signatures }
+        val store = stores.firstOrNull { store ->
+            signatures.any { it.equals(store.signingKey, ignoreCase = true) }
+        }
         val contentWarning = when {
             metaData == null -> ContentWarning.SAFE
             isAnime -> {
@@ -459,10 +476,8 @@ internal object ExtensionLoader {
 
         // Validate lib version
         val libVersion = if (isAnime) {
-            metaData.intValue(ANIME_METADATA_EXTENSION_LIB)
-                ?.takeUnless { it == 0 }
-                ?.toDouble()
-                ?: versionName.substringBeforeLast('.').toDoubleOrNull()
+            @Suppress("DEPRECATION")
+            parseAnimeLibVersion(metaData.get(ANIME_METADATA_EXTENSION_LIB), versionName)
         } else {
             metaData.getFloat(METADATA_EXTENSION_LIB)
                 .takeUnless { it == 0.0f }
@@ -470,8 +485,13 @@ internal object ExtensionLoader {
                 ?.toDouble()
                 ?: versionName.substringBeforeLast('.').toDoubleOrNull()
         }
-        val supportedLibVersions = if (isAnime) ANIME_SUPPORTED_LIB_VERSIONS else SUPPORTED_LIB_VERSIONS
-        if (libVersion == null || libVersion !in supportedLibVersions) {
+        val libSupported = if (isAnime) {
+            isSupportedAnimeLibVersion(libVersion)
+        } else {
+            libVersion != null && libVersion in SUPPORTED_LIB_VERSIONS
+        }
+        if (libVersion == null || !libSupported) {
+            val supportedLibVersions = if (isAnime) ANIME_SUPPORTED_LIB_VERSIONS else SUPPORTED_LIB_VERSIONS
             logcat(LogPriority.WARN) {
                 "Lib version is $libVersion, while only version(s) ${supportedLibVersions.joinToString()} are supported"
             }
@@ -505,7 +525,7 @@ internal object ExtensionLoader {
         }
 
         val classLoader = try {
-            DelegateLastClassLoaderCompat(appInfo.sourceDir, null, context.classLoader)
+            DelegateLastClassLoaderCompat(appInfo.sourceDir, appInfo.nativeLibraryDir, context.classLoader)
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e) { "Extension load error: $extName ($pkgName)" }
             return notLoaded(Extension.NotLoaded.Reason.Failed(e.rootMessage, e.stackTraceToString()), libVersion)
@@ -532,8 +552,8 @@ internal object ExtensionLoader {
             .flatMap {
                 try {
                     when (val obj = Class.forName(it, false, classLoader).getDeclaredConstructor().newInstance()) {
-                        is AnimeSource -> listOf(AnimeSourceAdapter(obj))
-                        is AnimeSourceFactory -> obj.createSources().map { source -> AnimeSourceAdapter(source) }
+                        is AnimeSource -> listOf(AnimeSourceAdapter.create(obj))
+                        is AnimeSourceFactory -> obj.createSources().map { source -> AnimeSourceAdapter.create(source) }
                         is Source -> listOf(obj)
                         is SourceFactory -> obj.createSources()
                         else -> throw Exception("Unknown source class type: ${obj.javaClass}")

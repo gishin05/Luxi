@@ -22,14 +22,15 @@ class TrustExtension(
 
     fun isTrusted(pkgInfo: PackageInfo, fingerprints: List<String>, stores: List<ExtensionStore>): Boolean {
         if (ExtensionLoader.isProtectedBuiltIn(pkgInfo.packageName)) return true
-        val trustedFingerprints = stores.mapTo(HashSet()) { it.signingKey }
+        val trustedFingerprints = stores.mapTo(HashSet()) { it.signingKey.lowercase() }
         trustedFingerprints += LUXI_SIGNING_KEY
         trustedFingerprints += KEIYOUSHI_SIGNING_KEY
         trustedFingerprints += KOHIDEN_SIGNING_KEY
         trustedFingerprints += YUZONO_SIGNING_KEY
         val fingerprint = fingerprints.lastOrNull() ?: return false
         val key = "${pkgInfo.packageName}:${PackageInfoCompat.getLongVersionCode(pkgInfo)}:$fingerprint"
-        return trustedFingerprints.any { fingerprints.contains(it) } || key in preferences.trustedExtensions.get()
+        return fingerprints.any { it.lowercase() in trustedFingerprints } ||
+            key in preferences.trustedExtensions.get()
     }
 
     fun trust(pkgName: String, versionCode: Long, signatureHash: String) {
@@ -54,7 +55,7 @@ class TrustExtension(
         return merge(
             // Stores are rewritten whenever their index is refreshed, so only their keys matter here
             repository.getAllAsFlow()
-                .map { stores -> stores.mapTo(HashSet()) { it.signingKey } }
+                .map { stores -> stores.mapTo(HashSet()) { it.signingKey.lowercase() } }
                 .distinctUntilChanged()
                 .drop(1),
             preferences.trustedExtensions.changes()

@@ -25,7 +25,7 @@ data class NetworkLegacyExtensionRepo(
             indexUrl = indexUrl,
             name = meta.name,
             badgeLabel = meta.shortName ?: meta.name,
-            signingKey = meta.signingKeyFingerprint,
+            signingKey = meta.signingKeyFingerprint.trim().lowercase(),
             contact = ExtensionStore.Contact(
                 website = meta.website,
                 discord = null,

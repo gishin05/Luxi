@@ -35,7 +35,9 @@ class GetExtensionsByType(
             val available = _available
                 .filter { extension ->
                     !ExtensionLoader.isProtectedBuiltIn(extension.pkgName) &&
-                        installedSignatures[extension.pkgName].orEmpty().none { extension.store.signingKey in it } &&
+                        installedSignatures[extension.pkgName].orEmpty().none { sigs ->
+                            sigs.any { it.equals(extension.store.signingKey, ignoreCase = true) }
+                        } &&
                         extension.contentWarning in enabledContentWarnings
                 }
                 .flatMap { ext ->

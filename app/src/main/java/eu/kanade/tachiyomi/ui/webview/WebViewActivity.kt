@@ -13,6 +13,7 @@ import dev.zacsweers.metro.Inject
 import eu.kanade.presentation.webview.WebViewScreenContent
 import eu.kanade.tachiyomi.R
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.source.CoverHttpSource
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.base.activity.BaseActivity
 import eu.kanade.tachiyomi.util.system.WebViewUtil
@@ -69,10 +70,12 @@ class WebViewActivity : BaseActivity() {
         setComposeContent {
             // Null until the source it belongs to has been resolved
             val headers by produceState<Map<String, String>?>(initialValue = null) {
-                val source = sourceManager.get(intent.extras!!.getLong(SOURCE_KEY)) as? HttpSource
+                val source = sourceManager.get(intent.extras!!.getLong(SOURCE_KEY))
                 value = withContext(Dispatchers.IO) {
                     try {
-                        source?.headers?.toWebViewHeaders().orEmpty()
+                        val sourceHeaders = (source as? HttpSource)?.headers
+                            ?: (source as? CoverHttpSource)?.coverHeaders
+                        sourceHeaders?.toWebViewHeaders().orEmpty()
                     } catch (e: Exception) {
                         logcat(LogPriority.ERROR, e) { "Failed to build headers" }
                         emptyMap()

@@ -1,11 +1,13 @@
 package eu.kanade.tachiyomi.source.anime
 
+import android.content.SharedPreferences
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.AnimeSource
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimeUpdateStrategy
 import eu.kanade.tachiyomi.animesource.model.FetchType
 import eu.kanade.tachiyomi.animesource.model.Hoster
-import eu.kanade.tachiyomi.animesource.model.Hoster.Companion.toHosterList
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
 import eu.kanade.tachiyomi.animesource.model.Video
@@ -13,7 +15,9 @@ import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
 import eu.kanade.tachiyomi.animesource.online.ParsedAnimeHttpSource
 import eu.kanade.tachiyomi.source.AnimeMediaSource
 import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.CoverHttpSource
+import eu.kanade.tachiyomi.source.UnmeteredSource
 import eu.kanade.tachiyomi.source.VideoSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -34,6 +38,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import tachiyomi.core.common.util.system.logcat
+import eu.kanade.tachiyomi.animesource.UnmeteredSource as AnimeUnmeteredSource
 
 /**
  * Exposes an Aniyomi [AnimeSource] to the parts of the app that expect a Mihon [CatalogueSource].
@@ -42,8 +47,8 @@ import tachiyomi.core.common.util.system.logcat
  * history, browse) keeps working without a second database model. Playback resolves the actual
  * streams through [VideoSource].
  */
-class AnimeSourceAdapter(
-    private val animeSource: AnimeSource,
+open class AnimeSourceAdapter(
+    protected val animeSource: AnimeSource,
 ) : CatalogueSource, AnimeMediaSource, VideoSource, CoverHttpSource {
 
     override val id: Long get() = animeSource.id
@@ -52,10 +57,33 @@ class AnimeSourceAdapter(
     override val supportsLatest: Boolean get() = animeSource.supportsLatest
 
     override val coverHeaders: Headers?
-        get() = (animeSource as? AnimeHttpSource)?.headers
+        get() = (animeSource as? AnimeHttpSource)?.let { runCatching { it.headers }.getOrNull() }
 
     override val coverClient: OkHttpClient?
-        get() = (animeSource as? AnimeHttpSource)?.client
+        get() = (animeSource as? AnimeHttpSource)?.let { runCatching { it.client }.getOrNull() }
+
+    val isHttpBacked: Boolean
+        get() = animeSource is AnimeHttpSource
+
+    val baseUrl: String?
+        get() = (animeSource as? AnimeHttpSource)?.baseUrl
+
+    fun getHomeUrl(): String? = (animeSource as? AnimeHttpSource)?.getHomeUrl()
+
+    fun getMangaUrl(manga: SManga): String? = (animeSource as? AnimeHttpSource)?.getAnimeUrl(manga.toSAnime())
+
+    @Suppress("DEPRECATION")
+    fun prepareNewChapter(chapter: SChapter, manga: SManga) {
+        val source = animeSource as? AnimeHttpSource ?: return
+        val episode = chapter.toSEpisode()
+        source.prepareNewEpisode(episode, manga.toSAnime())
+        chapter.url = episode.url
+        chapter.name = episode.name
+        chapter.chapter_number = episode.episode_number
+        chapter.scanlator = episode.scanlator
+        chapter.date_upload = episode.date_upload
+        chapter.memo = episode.memo
+    }
 
     // Mirrors HttpSource so downloads use a readable source directory instead of the adapter hash.
     override fun toString(): String = "$name (${lang.uppercase()})"
@@ -116,7 +144,16 @@ class AnimeSourceAdapter(
 
         val update = updateResult.getOrThrow()
         val resolvedChapters = if (fetchChapters && update.episodes.isEmpty()) {
-            resolveChaptersWithCompat(manga, sAnime, allowEmptyOnFailure = true)
+            if (update.anime.fetch_type == FetchType.Seasons) {
+                val seasonEpisodes = fetchSeasonEpisodes(update.anime)
+                if (seasonEpisodes.isNotEmpty()) {
+                    seasonEpisodes.map { it.toSChapter() }
+                } else {
+                    resolveChaptersWithCompat(manga, sAnime, allowEmptyOnFailure = true)
+                }
+            } else {
+                resolveChaptersWithCompat(manga, sAnime, allowEmptyOnFailure = true)
+            }
         } else {
             update.episodes.map { it.toSChapter() }
         }
@@ -138,14 +175,44 @@ class AnimeSourceAdapter(
         if (!animeSource.overridesGetAnimeEpisodeUpdate()) {
             coroutineScope {
                 val sAnime = manga.toSAnime()
-                if (fetchDetails) {
-                    launch {
-                        onDetails(animeSource.getAnimeDetails(sAnime).toSManga())
+                val detailsDeferred = if (fetchDetails) {
+                    async {
+                        animeSource.getAnimeDetails(sAnime).also { details ->
+                            onDetails(details.toSManga())
+                        }
                     }
+                } else {
+                    null
                 }
                 if (fetchChapters) {
                     launch {
-                        onChaptersChunk(resolveChaptersWithCompat(manga, sAnime, allowEmptyOnFailure = false), true)
+                        val initialResult = runCatching {
+                            resolveEpisodesWithCompat(sAnime, allowEmptyOnFailure = false)
+                        }
+                        val initialError = initialResult.exceptionOrNull()
+                        if (initialError is CancellationException) throw initialError
+
+                        val initialEpisodes = initialResult.getOrNull().orEmpty()
+                        val resolvedEpisodes = if (initialEpisodes.isNotEmpty()) {
+                            initialEpisodes
+                        } else {
+                            val details = runCatching { detailsDeferred?.await() }.getOrNull() ?: sAnime
+                            if (details.fetch_type == FetchType.Seasons) {
+                                fetchSeasonEpisodes(details).ifEmpty {
+                                    if (initialError != null) throw initialError else emptyList()
+                                }
+                            } else {
+                                if (initialError != null) throw initialError
+                                emptyList()
+                            }
+                        }
+
+                        val chaptersToEmit = if (resolvedEpisodes.isNotEmpty()) {
+                            resolvedEpisodes.map { it.toSChapter() }
+                        } else {
+                            fallbackMovieChapters(manga)
+                        }
+                        onChaptersChunk(chaptersToEmit, true)
                     }
                 }
             }
@@ -158,6 +225,35 @@ class AnimeSourceAdapter(
         }
         if (fetchChapters) {
             onChaptersChunk(update.chapters, true)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private suspend fun fetchSeasonEpisodes(anime: SAnime): List<SEpisode> {
+        val seasons = runCatching { animeSource.getSeasonList(anime) }
+            .onFailure { if (it is CancellationException) throw it }
+            .getOrNull()
+            .orEmpty()
+        if (seasons.isEmpty()) return emptyList()
+        val multiSeason = seasons.size > 1
+        return coroutineScope {
+            seasons.map { season ->
+                async {
+                    val episodes = runCatching { animeSource.getEpisodeList(season) }
+                        .onFailure { if (it is CancellationException) throw it }
+                        .getOrNull()
+                        .orEmpty()
+                    if (multiSeason) {
+                        val seasonLabel = season.title.takeIf { it.isNotBlank() }
+                        if (seasonLabel != null) {
+                            episodes.onEach { ep ->
+                                if (ep.scanlator.isNullOrBlank()) ep.scanlator = seasonLabel
+                            }
+                        }
+                    }
+                    episodes
+                }
+            }.awaitAll().flatten()
         }
     }
 
@@ -407,7 +503,14 @@ class AnimeSourceAdapter(
             resolved
         }
         if (withUrl.videoUrl.isBlank() || withUrl.videoUrl == NULL_URL || withUrl.isTorrentUrl()) return null
-        return startHttpServer(source, withUrl.copy(initialized = true))
+        val finalVideo = startHttpServer(source, withUrl.copy(initialized = true))
+        val isLoopback = finalVideo.videoUrl.toHttpUrlOrNull()?.host?.lowercase() in LOOPBACK_HOSTS
+        val finalHeaders = if (finalVideo.headers == null && !isLoopback) {
+            runCatching { source.headers }.getOrNull()
+        } else {
+            finalVideo.headers
+        }
+        return if (finalHeaders != finalVideo.headers) finalVideo.copy(headers = finalHeaders) else finalVideo
     }
 
     private fun unwrapDirectStream(source: AnimeHttpSource, video: Video): Video {
@@ -492,11 +595,47 @@ class AnimeSourceAdapter(
         }
     }
 
-    private companion object {
-        const val NULL_URL = "null"
+    companion object {
+        private const val NULL_URL = "null"
 
-        val HOSTER_METHODS = setOf("getHosterList", "hosterListRequest", "hosterListParse")
-        val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+        private val HOSTER_METHODS = setOf("getHosterList", "hosterListRequest", "hosterListParse")
+        private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1", "[::1]")
+
+        fun create(animeSource: AnimeSource): AnimeSourceAdapter = when {
+            animeSource is ConfigurableAnimeSource && animeSource is AnimeUnmeteredSource ->
+                ConfigurableUnmeteredAnimeSourceAdapter(animeSource, animeSource)
+            animeSource is ConfigurableAnimeSource ->
+                ConfigurableAnimeSourceAdapter(animeSource, animeSource)
+            animeSource is AnimeUnmeteredSource ->
+                UnmeteredAnimeSourceAdapter(animeSource)
+            else -> AnimeSourceAdapter(animeSource)
+        }
+    }
+}
+
+private class ConfigurableAnimeSourceAdapter(
+    animeSource: AnimeSource,
+    private val configurable: ConfigurableAnimeSource,
+) : AnimeSourceAdapter(animeSource), ConfigurableSource {
+    override fun getSourcePreferences(): SharedPreferences = configurable.getSourcePreferences()
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        configurable.setupPreferenceScreen(screen)
+    }
+}
+
+private class UnmeteredAnimeSourceAdapter(
+    animeSource: AnimeSource,
+) : AnimeSourceAdapter(animeSource), UnmeteredSource
+
+private class ConfigurableUnmeteredAnimeSourceAdapter(
+    animeSource: AnimeSource,
+    private val configurable: ConfigurableAnimeSource,
+) : AnimeSourceAdapter(animeSource), ConfigurableSource, UnmeteredSource {
+    override fun getSourcePreferences(): SharedPreferences = configurable.getSourcePreferences()
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        configurable.setupPreferenceScreen(screen)
     }
 }
 

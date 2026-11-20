@@ -16,6 +16,7 @@ import eu.kanade.domain.source.service.SourcePreferences
 import eu.kanade.tachiyomi.extension.ExtensionManager
 import eu.kanade.tachiyomi.extension.model.Extension
 import eu.kanade.tachiyomi.extension.model.InstallStep
+import eu.kanade.tachiyomi.source.anime.AnimeSourceAdapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.system.LocaleHelper
 import kotlinx.coroutines.Dispatchers
@@ -144,8 +145,10 @@ class ExtensionsViewModel(
 
                 when (extension) {
                     is Extension.Loaded -> extension.sources.any { source ->
+                        val homeUrl = (source as? HttpSource)?.getHomeUrl()
+                            ?: (source as? AnimeSourceAdapter)?.getHomeUrl()
                         source.name.contains(subquery, ignoreCase = true) ||
-                            (source as? HttpSource)?.getHomeUrl()?.contains(subquery, ignoreCase = true) == true ||
+                            homeUrl?.contains(subquery, ignoreCase = true) == true ||
                             source.id == subquery.toLongOrNull()
                     }
 

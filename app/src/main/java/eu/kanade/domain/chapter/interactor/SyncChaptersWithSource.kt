@@ -9,6 +9,7 @@ import eu.kanade.domain.manga.model.toSManga
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.Source
+import eu.kanade.tachiyomi.source.anime.AnimeSourceAdapter
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.yield
@@ -109,7 +110,9 @@ class SyncChaptersWithSource(
                 nextSourceOrder = 0L
             }
 
-            val sManga = if (source is HttpSource) manga.toSManga() else null
+            val isHttpSource = source is HttpSource
+            val animeSource = (source as? AnimeSourceAdapter)?.takeIf { it.isHttpBacked }
+            val sManga = if (isHttpSource || animeSource != null) manga.toSManga() else null
             val freshChapters = rawSourceChapters
                 .filter { seenSourceUrls.add(it.url) }
                 .map { sChapter ->
@@ -119,8 +122,12 @@ class SyncChaptersWithSource(
                         .copy(mangaId = manga.id, sourceOrder = nextSourceOrder++)
                     if (sManga != null) {
                         val preparedSChapter = sanitized.toSChapter()
-                        @Suppress("DEPRECATION")
-                        (source as HttpSource).prepareNewChapter(preparedSChapter, sManga)
+                        if (isHttpSource) {
+                            @Suppress("DEPRECATION")
+                            source.prepareNewChapter(preparedSChapter, sManga)
+                        } else {
+                            animeSource?.prepareNewChapter(preparedSChapter, sManga)
+                        }
                         sanitized.copyFromSChapter(preparedSChapter)
                     } else {
                         sanitized

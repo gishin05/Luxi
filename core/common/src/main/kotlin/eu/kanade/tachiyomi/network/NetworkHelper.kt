@@ -5,6 +5,7 @@ import dev.zacsweers.metro.AppScope
 import dev.zacsweers.metro.Inject
 import dev.zacsweers.metro.SingleIn
 import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
+import eu.kanade.tachiyomi.network.interceptor.ComixRateLimitInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
 import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +72,7 @@ class NetworkHelper(
 
     val client: OkHttpClient by lazy {
         clientBuilder()
+            .addInterceptor(ComixRateLimitInterceptor())
             .addInterceptor(
                 CloudflareInterceptor(context, cookieJar, scope, ::defaultUserAgentProvider),
             )

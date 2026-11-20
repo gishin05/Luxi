@@ -34,7 +34,10 @@ sealed interface Extension {
          */
         fun findListing(available: Collection<Available>): Available? {
             return available
-                .filter { it.pkgName == pkgName && it.store.signingKey in signatures }
+                .filter {
+                    it.pkgName == pkgName &&
+                        signatures.any { sig -> sig.equals(it.store.signingKey, ignoreCase = true) }
+                }
                 .maxWithOrNull(compareBy<Available> { it.versionCode }.thenBy { it.libVersion })
         }
 

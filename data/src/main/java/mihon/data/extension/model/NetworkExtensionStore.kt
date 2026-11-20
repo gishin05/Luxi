@@ -2,7 +2,9 @@ package mihon.data.extension.model
 
 import android.annotation.SuppressLint
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.json.JsonNames
+import kotlinx.serialization.protobuf.ProtoBuf
 import kotlinx.serialization.protobuf.ProtoNumber
 import mihon.data.extension.model.NetworkExtensionStore.ContentWarning
 import mihon.data.extension.model.NetworkExtensionStore.ExtensionList
@@ -17,17 +19,17 @@ data class NetworkExtensionStore(
     @ProtoNumber(2) val badgeLabel: String,
     @ProtoNumber(3) val signingKey: String,
     @ProtoNumber(4) val contact: Contact,
-    @ProtoNumber(101) val extensionList: ExtensionList?,
-    @ProtoNumber(102) val extensionListUrl: String?,
+    @ProtoNumber(101) val extensionList: ExtensionList? = null,
+    @ProtoNumber(102) val extensionListUrl: String? = null,
 ) : BaseNetworkExtensionStore {
     @Serializable
     data class Contact(
         @ProtoNumber(1) val website: String,
-        @ProtoNumber(2) val discord: String?,
+        @ProtoNumber(2) val discord: String? = null,
     )
 
     @Serializable
-    data class ExtensionList(@ProtoNumber(1) val extensions: List<Extension>)
+    data class ExtensionList(@ProtoNumber(1) val extensions: List<Extension> = emptyList())
 
     @Serializable
     data class Extension(
@@ -37,8 +39,8 @@ data class NetworkExtensionStore(
         @ProtoNumber(4) val extensionLib: String,
         @ProtoNumber(5) val versionCode: Long,
         @ProtoNumber(6) val versionName: String,
-        @ProtoNumber(7) val contentWarning: ContentWarning,
-        @ProtoNumber(8) val sources: List<Source>,
+        @ProtoNumber(7) val contentWarning: ContentWarning = ContentWarning.UNSPECIFIED,
+        @ProtoNumber(8) val sources: List<Source> = emptyList(),
     )
 
     @Serializable
@@ -82,7 +84,7 @@ data class NetworkExtensionStore(
             indexUrl = indexUrl,
             name = name,
             badgeLabel = badgeLabel,
-            signingKey = signingKey,
+            signingKey = signingKey.trim().lowercase(),
             contact = ExtensionStore.Contact(
                 website = contact.website,
                 discord = contact.discord,
@@ -93,15 +95,104 @@ data class NetworkExtensionStore(
     }
 }
 
+// Aniyomi v2 index.pb encodes isTorrent at @ProtoNumber(8) and sources at @ProtoNumber(9),
+// whereas Mihon encodes sources at @ProtoNumber(8).
+@SuppressLint("UnsafeOptInUsageError")
+@Serializable
+internal data class NetworkAnimeExtensionStore(
+    @ProtoNumber(1) val name: String,
+    @ProtoNumber(2) val badgeLabel: String,
+    @ProtoNumber(3) val signingKey: String,
+    @ProtoNumber(4) val contact: NetworkExtensionStore.Contact,
+    @ProtoNumber(101) val extensionList: ExtensionList? = null,
+    @ProtoNumber(102) val extensionListUrl: String? = null,
+) {
+    @Serializable
+    data class ExtensionList(
+        @ProtoNumber(1) val extensions: List<Extension> = emptyList(),
+    ) {
+        fun toNetworkExtensionList(): NetworkExtensionStore.ExtensionList =
+            NetworkExtensionStore.ExtensionList(extensions.map { it.toNetworkExtension() })
+    }
+
+    @Serializable
+    data class Extension(
+        @ProtoNumber(1) val name: String,
+        @ProtoNumber(2) val packageName: String,
+        @ProtoNumber(3) val resources: NetworkExtensionStore.Resources,
+        @ProtoNumber(4) val extensionLib: String,
+        @ProtoNumber(5) val versionCode: Long,
+        @ProtoNumber(6) val versionName: String,
+        @ProtoNumber(7) val contentWarning: ContentWarning = ContentWarning.UNSPECIFIED,
+        @ProtoNumber(8) val isTorrent: Boolean = false,
+        @ProtoNumber(9) val sources: List<NetworkExtensionStore.Source> = emptyList(),
+    ) {
+        fun toNetworkExtension(): NetworkExtensionStore.Extension =
+            NetworkExtensionStore.Extension(
+                name = name,
+                packageName = packageName,
+                resources = resources,
+                extensionLib = extensionLib,
+                versionCode = versionCode,
+                versionName = versionName,
+                contentWarning = contentWarning,
+                sources = sources,
+            )
+    }
+
+    fun toNetworkExtensionStore(): NetworkExtensionStore =
+        NetworkExtensionStore(
+            name = name,
+            badgeLabel = badgeLabel,
+            signingKey = signingKey,
+            contact = contact,
+            extensionList = extensionList?.toNetworkExtensionList(),
+            extensionListUrl = extensionListUrl,
+        )
+}
+
+fun ProtoBuf.decodeExtensionStore(bytes: ByteArray): NetworkExtensionStore {
+    val mihonStore = runCatching { decodeFromByteArray<NetworkExtensionStore>(bytes) }.getOrNull()
+    if (mihonStore != null) {
+        val extensions = mihonStore.extensionList?.extensions
+        if (extensions == null || extensions.isEmpty() || extensions.any { it.sources.isNotEmpty() }) {
+            return mihonStore
+        }
+        return runCatching {
+            decodeFromByteArray<NetworkAnimeExtensionStore>(bytes).toNetworkExtensionStore()
+        }.getOrDefault(mihonStore)
+    }
+    return decodeFromByteArray<NetworkAnimeExtensionStore>(bytes).toNetworkExtensionStore()
+}
+
+fun ProtoBuf.decodeExtensionList(bytes: ByteArray): ExtensionList {
+    val mihonList = runCatching { decodeFromByteArray<ExtensionList>(bytes) }.getOrNull()
+    if (mihonList != null) {
+        if (mihonList.extensions.isEmpty() || mihonList.extensions.any { it.sources.isNotEmpty() }) {
+            return mihonList
+        }
+        return runCatching {
+            decodeFromByteArray<NetworkAnimeExtensionStore.ExtensionList>(bytes).toNetworkExtensionList()
+        }.getOrDefault(mihonList)
+    }
+    return decodeFromByteArray<NetworkAnimeExtensionStore.ExtensionList>(bytes).toNetworkExtensionList()
+}
+
 fun ExtensionList.toAvailableExtensions(store: ExtensionStore): List<TachiyomiExtension.Available> {
     return extensions.map { extension ->
         val lang = extension.sources.map { it.language }.toSet()
+        val libVersion = extension.extensionLib.trim().toDoubleOrNull()
+            ?: if (extension.packageName.contains(".animeextension.")) {
+                extension.versionName.substringBefore('.').toDoubleOrNull() ?: 14.0
+            } else {
+                extension.versionName.substringBeforeLast('.').toDoubleOrNull() ?: 1.4
+            }
         TachiyomiExtension.Available(
             name = extension.name,
             pkgName = extension.packageName,
             apkUrl = extension.resources.apkUrl,
             iconUrl = extension.resources.iconUrl,
-            libVersion = extension.extensionLib.toDouble(),
+            libVersion = libVersion,
             versionCode = extension.versionCode,
             versionName = extension.versionName,
             lang = if (lang.size == 1) lang.first() else "all",

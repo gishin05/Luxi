@@ -9,7 +9,6 @@ import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.network.awaitSuccess
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.okio.decodeFromBufferedSource
 import kotlinx.serialization.protobuf.ProtoBuf
@@ -17,6 +16,8 @@ import logcat.LogPriority
 import mihon.data.extension.model.NetworkExtensionStore
 import mihon.data.extension.model.NetworkLegacyExtension
 import mihon.data.extension.model.NetworkLegacyExtensionRepo
+import mihon.data.extension.model.decodeExtensionList
+import mihon.data.extension.model.decodeExtensionStore
 import mihon.data.extension.model.toAvailableExtensions
 import mihon.domain.extension.model.ExtensionStore
 import okio.BufferedSource
@@ -35,10 +36,11 @@ class ExtensionStoreService(
     suspend fun fetch(indexUrl: String): Result<ExtensionStore> = withContext(Dispatchers.IO) { fetchStore(indexUrl) }
 
     private suspend fun fetchStore(indexUrl: String): Result<ExtensionStore> {
-        if (indexUrl.endsWith("/plugins.min.json")) {
+        val normalizedUrl = indexUrl.trim()
+        if (normalizedUrl.endsWith("/plugins.min.json")) {
             return Result.success(
                 ExtensionStore(
-                    indexUrl = indexUrl,
+                    indexUrl = normalizedUrl,
                     name = "LNReader (Novels)",
                     badgeLabel = "LNReader",
                     signingKey = "LNREADER_BUILTIN_NOVELS",
@@ -51,17 +53,19 @@ class ExtensionStoreService(
                 ),
             )
         }
-        var updatedIndexUrl: String = indexUrl
+        var updatedIndexUrl: String = normalizedUrl
         return try {
             val response = network.client.newCall(GET(updatedIndexUrl)).awaitSuccess()
             val store = response.body.source().decompressIfGzipped().use { source ->
-                val networkStore = when (source.peek().readByte()) {
+                val networkStore = when (source.peekJsonMarkerByte()) {
                     // "[..."
                     0x5B.toByte() -> run {
-                        if (!indexUrl.endsWith("/index.min.json")) {
+                        if (!normalizedUrl.endsWith("/index.min.json") && !normalizedUrl.endsWith("/index.json")) {
                             throw IllegalArgumentException("Provided legacy store url is not valid")
                         }
-                        updatedIndexUrl = indexUrl.replace("/index.min.json", "/repo.json")
+                        updatedIndexUrl = normalizedUrl
+                            .removeSuffix("/index.min.json")
+                            .removeSuffix("/index.json") + "/repo.json"
                         network.client.newCall(GET(updatedIndexUrl)).awaitSuccess().body.source().use {
                             json.decodeFromBufferedSource<NetworkLegacyExtensionRepo>(it)
                         }
@@ -72,7 +76,7 @@ class ExtensionStoreService(
                     } catch (_: IllegalArgumentException) {
                         json.decodeFromBufferedSource<NetworkExtensionStore>(source)
                     }
-                    else -> protoBuf.decodeFromByteArray<NetworkExtensionStore>(source.readByteArray())
+                    else -> protoBuf.decodeExtensionStore(source.readByteArray())
                 }
 
                 if (networkStore is NetworkLegacyExtensionRepo && networkStore.indexV2 != null) {
@@ -101,22 +105,20 @@ class ExtensionStoreService(
             val extensions = if (store.extensionListUrl != null) {
                 val response = network.client.newCall(GET(store.extensionListUrl!!)).awaitSuccess()
                 response.body.source().decompressIfGzipped().use { source ->
-                    when (source.peek().readByte()) {
+                    when (source.peekJsonMarkerByte()) {
                         // "{..."
                         0x7B.toByte() -> json.decodeFromBufferedSource<NetworkExtensionStore.ExtensionList>(source)
-                        else -> protoBuf.decodeFromByteArray<NetworkExtensionStore.ExtensionList>(
-                            source.readByteArray(),
-                        )
+                        else -> protoBuf.decodeExtensionList(source.readByteArray())
                     }
                         .toAvailableExtensions(store)
                 }
             } else if (!store.isLegacy) {
                 val response = network.client.newCall(GET(store.indexUrl)).awaitSuccess()
                 response.body.source().decompressIfGzipped().use { source ->
-                    when (source.peek().readByte()) {
+                    when (source.peekJsonMarkerByte()) {
                         // "{..."
                         0x7B.toByte() -> json.decodeFromBufferedSource<NetworkExtensionStore>(source)
-                        else -> protoBuf.decodeFromByteArray<NetworkExtensionStore>(source.readByteArray())
+                        else -> protoBuf.decodeExtensionStore(source.readByteArray())
                     }
                         .extensionList!!
                         .toAvailableExtensions(store)
@@ -135,6 +137,28 @@ class ExtensionStoreService(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun BufferedSource.peekJsonMarkerByte(): Byte? {
+        val peeked = peek()
+        if (peeked.exhausted()) return null
+        val first = peeked.readByte()
+        if (first == 0x5B.toByte() || first == 0x7B.toByte()) return first
+        val c0 = first.toInt() and 0xFF
+        if (c0 != 0x20 && c0 != 0x09 && c0 != 0x0D && c0 != 0xEF) return first
+        var check = c0
+        if (check == 0xEF) {
+            if (peeked.exhausted() || (peeked.readByte().toInt() and 0xFF) != 0xBB) return first
+            if (peeked.exhausted() || (peeked.readByte().toInt() and 0xFF) != 0xBF) return first
+            if (peeked.exhausted()) return first
+            check = peeked.readByte().toInt() and 0xFF
+        }
+        while (check == 0x20 || check == 0x09 || check == 0x0A || check == 0x0D) {
+            if (peeked.exhausted()) return first
+            check = peeked.readByte().toInt() and 0xFF
+        }
+        val candidate = check.toByte()
+        return if (candidate == 0x5B.toByte() || candidate == 0x7B.toByte()) candidate else first
     }
 
     private fun BufferedSource.decompressIfGzipped(): BufferedSource {
