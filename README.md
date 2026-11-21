@@ -33,6 +33,20 @@ Discover and enjoy manga, anime, webtoons, comics, and more on your Android devi
 
 </div>
 
+## Extensions
+
+<div align="left">
+
+* **Manga, Manhwa & Manhua:** [LUXI-MangaExtension](https://github.com/gishin05/LUXI-MangaExtension)
+
+Add the store URL in Luxi (**Browse → Extensions → Extension stores**):
+
+```
+https://raw.githubusercontent.com/gishin05/LUXI-MangaExtension/repo/index.json
+```
+
+</div>
+
 ### Credits
 
 Luxi is built on [Mihon](https://github.com/mihonapp/mihon).
