@@ -38,11 +38,13 @@ Discover and enjoy manga, anime, webtoons, comics, and more on your Android devi
 <div align="left">
 
 * **Manga, Manhwa & Manhua:** [LUXI-MangaExtension](https://github.com/gishin05/LUXI-MangaExtension)
+* **Anime & Donghua:** [LUXI-AnimeExtension](https://github.com/gishin05/LUXI-AnimeExtension)
 
-Add the store URL in Luxi (**Browse → Extensions → Extension stores**):
+Add the store URLs in Luxi (**Browse → Extensions → Extension stores**):
 
 ```
 https://raw.githubusercontent.com/gishin05/LUXI-MangaExtension/repo/index.json
+https://raw.githubusercontent.com/gishin05/LUXI-AnimeExtension/repo/index.json
 ```
 
 </div>
