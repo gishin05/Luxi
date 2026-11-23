@@ -476,31 +476,20 @@ class MangaViewModel(
             val needRefreshInfo = !manga.initialized
             val needRefreshChapter = loadedState.chapters.isEmpty()
             val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
-            val needResumeComix = !needRefreshInfo &&
-                !needRefreshChapter &&
-                isComix &&
+            val needResumeComix = isComix &&
                 UpdateMangaFromRemote.isComixIncompleteHistory(
                     manga,
                     loadedState.chapters.map { it.chapter },
                 )
 
-            if (needRefreshInfo || needRefreshChapter) {
+            if (needRefreshInfo || needRefreshChapter || needResumeComix) {
                 runRemoteFetch(
                     generation = initGeneration,
                     manga = manga,
                     manualFetch = false,
                     fetchDetails = needRefreshInfo,
-                    fetchChapters = needRefreshChapter,
+                    fetchChapters = needRefreshChapter || needResumeComix,
                     startInFooter = false,
-                )
-            } else if (needResumeComix) {
-                runRemoteFetch(
-                    generation = initGeneration,
-                    manga = manga,
-                    manualFetch = true,
-                    fetchDetails = false,
-                    fetchChapters = true,
-                    startInFooter = true,
                 )
             }
         }
