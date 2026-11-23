@@ -48,6 +48,7 @@ import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.source.local.isLocal
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.floor
 import kotlin.time.Clock
 import kotlin.time.Instant
 
@@ -90,6 +91,18 @@ class UpdateMangaFromRemote(
         try {
             val chapters = chapterRepository.getChapterByMangaId(manga.id)
                 .sortedBy { it.sourceOrder }
+            val numberedChapters = chapters
+                .map { it.chapterNumber.toDouble() }
+                .filter { it > 0.0 }
+                .sorted()
+            val hasCompleteHistory = numberedChapters.isNotEmpty() &&
+                numberedChapters.first() <= 1.0 &&
+                numberedChapters.zipWithNext().none { (a, b) -> floor(b) - floor(a) > 1.0 }
+            val knownChapters = if (!manualFetch && hasCompleteHistory) {
+                chapters.map(Chapter::toSChapter)
+            } else {
+                emptyList()
+            }
 
             val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
             val listenComixProgress = !source.isLocal() &&
@@ -141,7 +154,7 @@ class UpdateMangaFromRemote(
                     try {
                         source.getMangaUpdateProgressively(
                             manga = manga.toSManga(),
-                            chapters = chapters.map(Chapter::toSChapter),
+                            chapters = knownChapters,
                             fetchDetails = fetchDetails,
                             fetchChapters = fetchChapters,
                             onDetails = { remoteManga ->

@@ -22,4 +22,5 @@ enum class MangaScreenItem {
     CHAPTER_HEADER,
     CHAPTER,
     CHAPTER_GAP,
+    CHAPTER_LOADING_FOOTER,
 }

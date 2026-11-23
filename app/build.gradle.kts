@@ -39,8 +39,8 @@ android {
     defaultConfig {
         applicationId = "app.luxi"
 
-        versionCode = 6
-        versionName = "0.2.3.4"
+        versionCode = 7
+        versionName = "0.2.4"
 
         buildConfigField("boolean", "TELEMETRY_INCLUDED", "${Config.includeTelemetry}")
         buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater}")
