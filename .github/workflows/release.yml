@@ -116,6 +116,7 @@ jobs:
             - **Auto-Resume Partial Lists & CAPTCHA Recovery:** Automatically resumes loading missing older chapters when reopening a partially loaded Comix manga, and displays `"Open WebView"` and `"Retry"` controls in the footer if verification is required (without automatic retry loops).
 
             ### Bug Fixes
+            - **In-App Updater Version Comparison:** Fixed version checks ignoring 4th-segment hotfix numbers (e.g. `v0.2.x.y`) or miscomparing versions with different segment counts.
             - **Gentle Native DOM Pagination:** Removed aggressive `limit=100` API and synthetic SSR probing in the built-in Comix.to extension, using native page turns with 1.5s pacing to reduce CAPTCHA triggers and initial load wait time.
 
             <!-->
