@@ -899,14 +899,7 @@ private fun Tracks.options(trackType: Int, isAudio: Boolean): List<TrackOption> 
     }
 }
 
-internal fun Format.isUnlabeledClosedCaption(): Boolean =
-    isUnlabeledClosedCaption(sampleMimeType, label, language)
-
-internal fun isUnlabeledClosedCaption(
-    sampleMimeType: String?,
-    label: String?,
-    language: String?,
-): Boolean {
+internal fun Format.isUnlabeledClosedCaption(): Boolean {
     val isClosedCaption = sampleMimeType == MimeTypes.APPLICATION_CEA608 ||
         sampleMimeType == MimeTypes.APPLICATION_CEA708
     if (!isClosedCaption) return false
@@ -924,22 +917,18 @@ internal fun isUnlabeledClosedCaption(
     return !hasMeaningfulLabel && !hasLanguage
 }
 
-internal inline fun Format.trackLabel(isAudio: Boolean, fallbackIndex: () -> Int): String =
-    resolveTrackLabel(label, language, isAudio, fallbackIndex)
-
-internal inline fun resolveTrackLabel(
-    label: String?,
-    language: String?,
-    isAudio: Boolean,
-    fallbackIndex: () -> Int,
-): String {
+internal inline fun Format.trackLabel(isAudio: Boolean, fallbackIndex: () -> Int): String {
     val formatLabel = label?.trim()?.takeIf {
         it.isNotEmpty() && !it.equals("und", ignoreCase = true) && !it.equals("unk", ignoreCase = true)
     }
     if (formatLabel != null) return formatLabel
 
-    val readableLanguage = language?.let(::resolveReadableLanguageOrNull)
-    if (readableLanguage != null) return readableLanguage
+    val languageRaw = language?.trim()?.takeIf {
+        it.isNotEmpty() && !it.equals("und", ignoreCase = true) && !it.equals("unk", ignoreCase = true)
+    }
+    if (languageRaw != null) {
+        return resolveSubtitleConfigLabel(languageRaw, fallbackIndex())
+    }
 
     val index = fallbackIndex()
     return if (isAudio) "Audio $index" else "Subtitle $index"
@@ -1110,13 +1099,10 @@ internal fun normalizeSubtitleLanguageTag(raw: String): String? {
     }
 }
 
-internal fun resolveSubtitleConfigLabel(raw: String, fallbackIndex: Int): String =
-    resolveReadableLanguageOrNull(raw) ?: "Subtitle $fallbackIndex"
-
-internal fun resolveReadableLanguageOrNull(raw: String): String? {
+internal fun resolveSubtitleConfigLabel(raw: String, fallbackIndex: Int): String {
     val trimmed = raw.trim()
     if (trimmed.isEmpty() || trimmed.equals("und", ignoreCase = true) || trimmed.equals("unk", ignoreCase = true)) {
-        return null
+        return "Subtitle $fallbackIndex"
     }
     val tag = normalizeSubtitleLanguageTag(trimmed)
     if (tag != null) {
