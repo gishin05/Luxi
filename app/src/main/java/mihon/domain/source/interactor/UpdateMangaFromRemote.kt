@@ -360,14 +360,6 @@ class UpdateMangaFromRemote(
         return ParsedComixProgress(details = details, chapters = chapters, hasMore = hasMore)
     }
 
-    private fun matchesComixManga(mangaUrl: String, hid: String?, pathname: String?): Boolean {
-        val normManga = mangaUrl.trim().trimEnd('/').removePrefix("/")
-        val normPath = pathname?.trim()?.trimEnd('/')?.removePrefix("/")
-        if (!normPath.isNullOrEmpty() && normManga.equals(normPath, ignoreCase = true)) return true
-        val mangaHid = COMIX_HID_REGEX.find(normManga)?.groupValues?.getOrNull(1)
-        return !hid.isNullOrEmpty() && hid.equals(mangaHid, ignoreCase = true)
-    }
-
     private fun parseComixDetails(detail: JsonObject, mangaUrl: String, prefs: SharedPreferences): SManga {
         val showTags = prefs.getBoolean("pref_show_tags_in_genres", false)
         val posterQuality = prefs.getString("pref_poster_quality", "large") ?: "large"
@@ -526,11 +518,21 @@ class UpdateMangaFromRemote(
             ignoreUnknownKeys = true
             isLenient = true
         }
-        private val COMIX_HID_REGEX = Regex("""^title/([a-z0-9]+)(?:-|/|$)""", RegexOption.IGNORE_CASE)
+        private val COMIX_HID_REGEX = Regex("""^(?:title/)?([a-z0-9]+)(?:-|/|$)""", RegexOption.IGNORE_CASE)
         private val COMIX_REL_DATE_REGEX = Regex(
             """^(\d+)\s*(s|m|h|d|w|mo|mos|y|yr|yrs|min|mins|sec|secs|hr|hrs|day|days|week|weeks|month|months|year|years)\s+ago$""",
             RegexOption.IGNORE_CASE,
         )
+
+        internal fun matchesComixManga(mangaUrl: String, hid: String?, pathname: String?): Boolean {
+            val normManga = mangaUrl.trim().substringBefore('?').substringBefore('#')
+                .trimEnd('/').removePrefix("/").removePrefix("title/")
+            val normPath = pathname?.trim()?.substringBefore('?')?.substringBefore('#')
+                ?.trimEnd('/')?.removePrefix("/")?.removePrefix("title/")
+            if (!normPath.isNullOrEmpty() && normManga.equals(normPath, ignoreCase = true)) return true
+            val mangaHid = COMIX_HID_REGEX.find(normManga)?.groupValues?.getOrNull(1)
+            return !hid.isNullOrEmpty() && hid.equals(mangaHid, ignoreCase = true)
+        }
 
         fun isComixIncompleteHistory(manga: Manga, chapters: List<Chapter>): Boolean {
             if (manga.memo[COMIX_COMPLETE_MEMO_KEY]?.jsonPrimitive?.booleanOrNull == true) return false
