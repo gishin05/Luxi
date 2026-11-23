@@ -111,13 +111,12 @@ jobs:
             <!-->
 
             ### Improvements
-            - **Progressive Chapter Loading Footer:** Added a loading indicator below the last visible chapter while older chapters continue loading in the background, so you can read the synopsis or browse the latest chapters right away.
+            - **Two-Phase 20-Chapter Batch Loading:** The initial refresh spinner now finishes right after the synopsis and first batch of latest chapters load, while older chapters stream smoothly in ~20-chapter batches using the bottom `"Loading more chapters…"` footer.
+            - **Live Chapter Counter & Clean Gap Display:** Shows loaded chapter progress in the footer and hides temporary `"Missing X chapters"` notices until all batches finish loading.
+            - **Auto-Resume Partial Lists & CAPTCHA Recovery:** Automatically resumes loading missing older chapters when reopening a partially loaded Comix manga, and displays `"Open WebView"` and `"Retry"` controls in the footer if verification is required (without automatic retry loops).
 
             ### Bug Fixes
-            - **Comix.to Full Chapter History Loading:** Fixed multi-page chapter harvesting stopping after the first batch of latest chapters:
-              - Fixed fast API pagination exiting early when pages return fewer than 100 items or omit `last_page`.
-              - Fixed cached partial chapter lists blocking older chapter pages via `stopAtIds`; manual refreshes and incomplete histories now fetch the full chapter list down to Chapter 1.
-              - Added hydration JSON extraction and safer SSR fallback handling so remaining pages continue loading reliably.
+            - **Gentle Native DOM Pagination:** Removed aggressive `limit=100` API and synthetic SSR probing in the built-in Comix.to extension, using native page turns with 1.5s pacing to reduce CAPTCHA triggers and initial load wait time.
 
             <!-->
 

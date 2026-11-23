@@ -26,8 +26,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SmallExtendedFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -48,6 +50,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLocale
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastAll
 import androidx.compose.ui.util.fastAny
@@ -111,6 +114,7 @@ fun MangaScreen(
 
     onFilterButtonClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
 
@@ -165,6 +169,7 @@ fun MangaScreen(
             onCopyTagToClipboard = onCopyTagToClipboard,
             onFilterClicked = onFilterButtonClicked,
             onRefresh = onRefresh,
+            onRetryRemainingChapters = onRetryRemainingChapters,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
             onCoverClicked = onCoverClicked,
@@ -202,6 +207,7 @@ fun MangaScreen(
             onCopyTagToClipboard = onCopyTagToClipboard,
             onFilterButtonClicked = onFilterButtonClicked,
             onRefresh = onRefresh,
+            onRetryRemainingChapters = onRetryRemainingChapters,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
             onCoverClicked = onCoverClicked,
@@ -276,6 +282,7 @@ private fun MangaScreenSmallImpl(
 
     onFilterClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
 
@@ -478,7 +485,10 @@ private fun MangaScreenSmallImpl(
                     sharedChapterItems(
                         manga = state.manga,
                         chapters = listItem,
-                        isRefreshingData = state.isRefreshingData,
+                        chapterBatchState = state.chapterBatchState,
+                        loadedChapterCount = state.chapters.size,
+                        onRetryRemainingChapters = onRetryRemainingChapters,
+                        onWebViewClicked = onWebViewClicked,
                         isAnyChapterSelected = state.selectedChapters.isNotEmpty(),
                         chapterSwipeStartAction = chapterSwipeStartAction,
                         chapterSwipeEndAction = chapterSwipeEndAction,
@@ -517,6 +527,7 @@ fun MangaScreenLargeImpl(
 
     onFilterButtonClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
 
@@ -710,7 +721,10 @@ fun MangaScreenLargeImpl(
                             sharedChapterItems(
                                 manga = state.manga,
                                 chapters = listItem,
-                                isRefreshingData = state.isRefreshingData,
+                                chapterBatchState = state.chapterBatchState,
+                                loadedChapterCount = state.chapters.size,
+                                onRetryRemainingChapters = onRetryRemainingChapters,
+                                onWebViewClicked = onWebViewClicked,
                                 isAnyChapterSelected = state.selectedChapters.isNotEmpty(),
                                 chapterSwipeStartAction = chapterSwipeStartAction,
                                 chapterSwipeEndAction = chapterSwipeEndAction,
@@ -774,7 +788,10 @@ private fun SharedMangaBottomActionMenu(
 private fun LazyListScope.sharedChapterItems(
     manga: Manga,
     chapters: List<ChapterList>,
-    isRefreshingData: Boolean,
+    chapterBatchState: MangaViewModel.ChapterBatchState,
+    loadedChapterCount: Int,
+    onRetryRemainingChapters: () -> Unit,
+    onWebViewClicked: (() -> Unit)?,
     isAnyChapterSelected: Boolean,
     chapterSwipeStartAction: LibraryPreferences.ChapterSwipeAction,
     chapterSwipeEndAction: LibraryPreferences.ChapterSwipeAction,
@@ -859,29 +876,66 @@ private fun LazyListScope.sharedChapterItems(
         }
     }
 
-    if (isRefreshingData && chapters.isNotEmpty()) {
-        item(
-            key = MangaScreenItem.CHAPTER_LOADING_FOOTER,
-            contentType = MangaScreenItem.CHAPTER_LOADING_FOOTER,
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-                verticalAlignment = Alignment.CenterVertically,
+    when (chapterBatchState) {
+        is MangaViewModel.ChapterBatchState.Loading -> {
+            item(
+                key = MangaScreenItem.CHAPTER_LOADING_FOOTER,
+                contentType = MangaScreenItem.CHAPTER_LOADING_FOOTER,
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    strokeWidth = 2.dp,
-                )
-                Text(
-                    text = "Loading remaining chapters…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Text(
+                        text = "Loading more chapters… ($loadedChapterCount loaded)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
+        is MangaViewModel.ChapterBatchState.Error -> {
+            item(
+                key = MangaScreenItem.CHAPTER_LOADING_FOOTER,
+                contentType = MangaScreenItem.CHAPTER_LOADING_FOOTER,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        text = chapterBatchState.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (chapterBatchState.requiresWebView && onWebViewClicked != null) {
+                            OutlinedButton(onClick = onWebViewClicked) {
+                                Text(text = "Open WebView")
+                            }
+                        }
+                        FilledTonalButton(onClick = onRetryRemainingChapters) {
+                            Text(text = "Retry")
+                        }
+                    }
+                }
+            }
+        }
+        MangaViewModel.ChapterBatchState.Idle -> Unit
     }
 }
 

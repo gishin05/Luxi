@@ -54,6 +54,7 @@ import eu.kanade.tachiyomi.util.system.toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
@@ -77,6 +79,7 @@ import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.core.metro.AppCoroutineScope
 import mihon.domain.chapter.interactor.FilterChaptersForDownload
+import mihon.domain.source.interactor.ComixRequestGate
 import mihon.domain.source.interactor.UpdateMangaFromRemote
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.preference.CheckboxState
@@ -190,6 +193,9 @@ class MangaViewModel(
     private val dialog = MutableStateFlow<Dialog?>(null)
 
     private val isRefreshingData = MutableStateFlow(false)
+    private val chapterBatchState = MutableStateFlow<ChapterBatchState>(ChapterBatchState.Idle)
+    private var refreshJob: Job? = null
+    private var fetchGeneration = 0L
 
     private val downloadStates = MutableStateFlow(emptyMap<Long, Download.State>())
 
@@ -247,10 +253,15 @@ class MangaViewModel(
         val downloadedOnly: Boolean,
     )
 
+    private val isBatchLoading = chapterBatchState
+        .map { it is ChapterBatchState.Loading }
+        .distinctUntilChanged()
+
     private val processedChaptersFlow = combine(
         mangaAndChapters,
         basePreferences.downloadedOnly.changes(),
-    ) { mangaAndChapters, downloadedOnly ->
+        isBatchLoading,
+    ) { mangaAndChapters, downloadedOnly, isBatchLoading ->
         val manga = mangaAndChapters.manga
         val rawChapters = mangaAndChapters.chapters
 
@@ -268,13 +279,14 @@ class MangaViewModel(
             .sortedWith { (chapter1), (chapter2) -> chapterSort(chapter1, chapter2) }
             .toList()
 
-        val missingChapterCount = if (hideMissingChapters) {
+        val suppressMissingChapters = hideMissingChapters || isBatchLoading
+        val missingChapterCount = if (suppressMissingChapters) {
             0
         } else {
             processed.fastMap { it.chapter.chapterNumber }.missingChaptersCount()
         }
 
-        val chapterListItems = if (hideMissingChapters) {
+        val chapterListItems = if (suppressMissingChapters) {
             processed
         } else {
             processed.insertSeparators { before, after ->
@@ -349,13 +361,13 @@ class MangaViewModel(
         scanlators,
         trackers,
         combine(selectedChapterIds, queuedDownloadStates.pausedWhileUnsubscribed(), ::Pair),
-        combine(dialog, isRefreshingData, ::Pair),
+        combine(dialog, isRefreshingData, chapterBatchState, ::Triple),
     ) {
             processedData,
             (availableScanlators, excludedScanlators),
             (trackingCount, hasLoggedInTrackers),
             (selectedIds, downloads),
-            (dialog, isRefreshingData),
+            (dialog, isRefreshingData, chapterBatchState),
         ->
         val hasSelections = selectedIds.isNotEmpty()
         val hasDownloads = downloads.isNotEmpty()
@@ -427,6 +439,7 @@ class MangaViewModel(
             trackingCount = trackingCount,
             hasLoggedInTrackers = hasLoggedInTrackers,
             isRefreshingData = isRefreshingData,
+            chapterBatchState = chapterBatchState,
             dialog = dialog,
             hideMissingChapters = hideMissingChapters,
             downloadedOnly = processedData.downloadedOnly,
@@ -454,73 +467,182 @@ class MangaViewModel(
                 .collect { downloadProgress[it.chapter.id] = it.progress }
         }
 
-        viewModelScope.launch {
+        val initGeneration = ++fetchGeneration
+        refreshJob = viewModelScope.launch {
             // The state loads the entry and its chapters anyway, so they aren't queried separately
             val loadedState = state.filterIsInstance<State.Success>().first()
             val manga = loadedState.manga
+            val source = loadedState.source
             val needRefreshInfo = !manga.initialized
             val needRefreshChapter = loadedState.chapters.isEmpty()
+            val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
+            val needResumeComix = !needRefreshInfo &&
+                !needRefreshChapter &&
+                isComix &&
+                UpdateMangaFromRemote.isComixIncompleteHistory(
+                    manga,
+                    loadedState.chapters.map { it.chapter },
+                )
 
-            // Fetch info-chapters when needed
             if (needRefreshInfo || needRefreshChapter) {
-                isRefreshingData.value = true
-                fetchAllFromSource(
+                runRemoteFetch(
+                    generation = initGeneration,
                     manga = manga,
                     manualFetch = false,
                     fetchDetails = needRefreshInfo,
                     fetchChapters = needRefreshChapter,
+                    startInFooter = false,
                 )
-                isRefreshingData.value = false
+            } else if (needResumeComix) {
+                runRemoteFetch(
+                    generation = initGeneration,
+                    manga = manga,
+                    manualFetch = true,
+                    fetchDetails = false,
+                    fetchChapters = true,
+                    startInFooter = true,
+                )
             }
         }
     }
 
     fun fetchAllFromSource(manualFetch: Boolean = true) {
         viewModelScope.launch {
-            isRefreshingData.value = true
-            fetchAllFromSource(
+            startRemoteFetch(
                 manga = getMangaAndChapters.awaitManga(mangaId),
                 manualFetch = manualFetch,
                 fetchDetails = true,
                 fetchChapters = true,
+                startInFooter = false,
             )
-            isRefreshingData.value = false
         }
     }
 
-    private suspend fun fetchAllFromSource(
+    fun retryRemainingChapters() {
+        viewModelScope.launch {
+            startRemoteFetch(
+                manga = getMangaAndChapters.awaitManga(mangaId),
+                manualFetch = true,
+                fetchDetails = false,
+                fetchChapters = true,
+                startInFooter = true,
+            )
+        }
+    }
+
+    private fun startRemoteFetch(
         manga: Manga,
         manualFetch: Boolean,
         fetchDetails: Boolean,
         fetchChapters: Boolean,
+        startInFooter: Boolean,
     ) {
+        val generation = ++fetchGeneration
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            runRemoteFetch(
+                generation = generation,
+                manga = manga,
+                manualFetch = manualFetch,
+                fetchDetails = fetchDetails,
+                fetchChapters = fetchChapters,
+                startInFooter = startInFooter,
+            )
+        }
+    }
+
+    private suspend fun runRemoteFetch(
+        generation: Long,
+        manga: Manga,
+        manualFetch: Boolean,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+        startInFooter: Boolean,
+    ) {
+        val source = sourceManager.getOrStub(manga.source)
+        val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
+        if (fetchGeneration == generation) {
+            if (startInFooter) {
+                isRefreshingData.value = false
+                chapterBatchState.value = ChapterBatchState.Loading
+            } else {
+                isRefreshingData.value = true
+                chapterBatchState.value = ChapterBatchState.Idle
+            }
+        }
         try {
             val update = updateMangaFromRemote(
-                source = sourceManager.getOrStub(manga.source),
+                source = source,
                 manga = manga,
                 fetchDetails = fetchDetails,
                 fetchChapters = fetchChapters,
                 manualFetch = manualFetch,
+                onFirstBatchLoaded = { hasMore ->
+                    if (fetchGeneration == generation) {
+                        isRefreshingData.value = false
+                        chapterBatchState.value = if (hasMore) {
+                            ChapterBatchState.Loading
+                        } else {
+                            ChapterBatchState.Idle
+                        }
+                    }
+                },
             )
                 .getOrThrow()
 
-            if (manualFetch) {
+            if (fetchGeneration == generation) {
+                isRefreshingData.value = false
+                chapterBatchState.value = ChapterBatchState.Idle
+            }
+
+            if (manualFetch && !startInFooter) {
                 downloadNewChapters(update.newChapters)
             }
         } catch (_: CancellationException) {
-            // ignore
-        } catch (e: Exception) {
-            val message = if (e is NoChaptersException) {
-                context.stringResource(MR.strings.no_chapters_error)
-            } else {
-                logcat(LogPriority.ERROR, e)
-                with(context) { e.formattedMessage }
+            if (fetchGeneration == generation) {
+                isRefreshingData.value = false
+                chapterBatchState.value = ChapterBatchState.Idle
             }
+        } catch (e: Exception) {
+            if (fetchGeneration != generation) return
+            isRefreshingData.value = false
+            val requiresWebView = isComix && isComixVerificationError(e)
+            if (chapterBatchState.value is ChapterBatchState.Loading || startInFooter || requiresWebView) {
+                val message = if (requiresWebView) {
+                    "Verification required. Open WebView to solve the CAPTCHA, then tap Retry."
+                } else {
+                    with(context) { e.formattedMessage }
+                }
+                chapterBatchState.value = ChapterBatchState.Error(
+                    message = message,
+                    requiresWebView = requiresWebView,
+                )
+            } else {
+                chapterBatchState.value = ChapterBatchState.Idle
+                val message = if (e is NoChaptersException) {
+                    context.stringResource(MR.strings.no_chapters_error)
+                } else {
+                    logcat(LogPriority.ERROR, e)
+                    with(context) { e.formattedMessage }
+                }
 
-            viewModelScope.launch {
-                snackbarHostState.showSnackbar(message = message)
+                viewModelScope.launch {
+                    snackbarHostState.showSnackbar(message = message)
+                }
             }
         }
+    }
+
+    private fun isComixVerificationError(e: Exception): Boolean {
+        val msg = e.message.orEmpty()
+        return msg.contains("captcha", ignoreCase = true) ||
+            msg.contains("webview", ignoreCase = true) ||
+            msg.contains("403", ignoreCase = true) ||
+            msg.contains("cloudflare", ignoreCase = true) ||
+            msg.contains("429", ignoreCase = true) ||
+            msg.contains("incomplete", ignoreCase = true) ||
+            msg.contains("timed out", ignoreCase = true) ||
+            msg.contains("verification", ignoreCase = true)
     }
 
     // Manga info - start
@@ -1234,6 +1356,16 @@ class MangaViewModel(
         val chapters: List<ChapterList.Item>,
     )
 
+    @Immutable
+    sealed interface ChapterBatchState {
+        data object Idle : ChapterBatchState
+        data object Loading : ChapterBatchState
+        data class Error(
+            val message: String,
+            val requiresWebView: Boolean,
+        ) : ChapterBatchState
+    }
+
     sealed interface State {
         @Immutable
         data object Loading : State
@@ -1250,6 +1382,7 @@ class MangaViewModel(
             val trackingCount: Int = 0,
             val hasLoggedInTrackers: Boolean = false,
             val isRefreshingData: Boolean = false,
+            val chapterBatchState: ChapterBatchState = ChapterBatchState.Idle,
             val dialog: Dialog? = null,
             val hideMissingChapters: Boolean = false,
             val downloadedOnly: Boolean = false,
