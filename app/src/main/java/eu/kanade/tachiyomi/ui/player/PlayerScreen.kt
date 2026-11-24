@@ -2,14 +2,22 @@ package eu.kanade.tachiyomi.ui.player
 
 import android.content.Context
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,7 +40,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -44,13 +51,18 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +81,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
@@ -83,7 +96,10 @@ import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.source.VideoSource
 import eu.kanade.tachiyomi.source.model.SChapter
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import logcat.LogPriority
 import mihon.app.di.appGraph
@@ -96,15 +112,37 @@ import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.stringResource
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 private const val CONTROLS_TIMEOUT_MS = 3_500L
 private const val POSITION_UPDATE_MS = 500L
+private const val SEEK_SKIP_MS = 10_000L
+private const val SKIP_COMBO_WINDOW_MS = 800L
+private const val HOLD_THRESHOLD_MS = 220L
+private const val SCRUB_TICK_MS = 250L
 private const val NO_AUDIO_TRACK = -1
 private val SEEK_THUMB_SIZE = 14.dp
 
 /** The panels the player can open from the control bar. */
 private enum class PlayerPanel { QUALITY, AUDIO, SUBTITLES }
+
+private enum class SeekDirection { BACKWARD, FORWARD }
+
+private enum class HoldSpeed(val multiplier: Int) { X2(2), X4(4), X8(8) }
+
+private enum class HoldCheckResult { SKIP, HOLD, CANCELLED }
+
+private data class SkipFeedback(
+    val direction: SeekDirection,
+    val totalSeconds: Int,
+    val eventId: Int,
+)
+
+private data class HoldScrubState(
+    val direction: SeekDirection,
+    val speed: HoldSpeed,
+)
 
 @Composable
 fun PlayerScreen(
@@ -160,8 +198,12 @@ fun PlayerScreen(
     var subtitleScale by remember { mutableFloatStateOf(1f) }
     var tracks by remember { mutableStateOf(Tracks.EMPTY) }
     var subtitleView by remember { mutableStateOf<SubtitleView?>(null) }
+    var videoSelection by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var audioSelection by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     var subtitleSelection by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var skipFeedback by remember { mutableStateOf<SkipFeedback?>(null) }
+    var holdScrub by remember { mutableStateOf<HoldScrubState?>(null) }
+    var isSteppedScrubbing by remember { mutableStateOf(false) }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -175,6 +217,15 @@ fun PlayerScreen(
 
             override fun onTracksChanged(newTracks: Tracks) {
                 tracks = newTracks
+                val hasVideoOverride = player.trackSelectionParameters.overrides.keys
+                    .any { it.type == C.TRACK_TYPE_VIDEO }
+                videoSelection = if (hasVideoOverride) {
+                    newTracks.videoOptions()
+                        .firstOrNull { it.selected }
+                        ?.let { it.groupIndex to it.trackIndex }
+                } else {
+                    null
+                }
                 audioSelection = newTracks.audioOptions()
                     .firstOrNull { it.selected }
                     ?.let { it.groupIndex to it.trackIndex }
@@ -215,6 +266,86 @@ fun PlayerScreen(
         onDispose {
             player.removeListener(listener)
             player.release()
+        }
+    }
+
+    val latestHoldSpeed by rememberUpdatedState(holdScrub?.speed)
+    LaunchedEffect(holdScrub?.direction) {
+        val direction = holdScrub?.direction ?: return@LaunchedEffect
+        val wasPlaying = player.playWhenReady
+        var inSteppedMode = false
+        var scrubPos = player.currentPosition.coerceAtLeast(0L)
+        var appliedForwardSpeed = 0f
+
+        try {
+            while (isActive) {
+                val speed = latestHoldSpeed ?: break
+                // Media3 rejects negative playback speeds, and 8x real-time decode can stall mobile codecs.
+                val needsStepped = direction == SeekDirection.BACKWARD || speed == HoldSpeed.X8
+                if (!needsStepped) {
+                    if (inSteppedMode) {
+                        player.setSeekParameters(SeekParameters.DEFAULT)
+                        player.seekTo(scrubPos)
+                        inSteppedMode = false
+                        isSteppedScrubbing = false
+                    }
+                    val targetSpeed = speed.multiplier.toFloat()
+                    if (appliedForwardSpeed != targetSpeed) {
+                        player.setPlaybackSpeed(targetSpeed)
+                        appliedForwardSpeed = targetSpeed
+                    }
+                    if (!player.playWhenReady) {
+                        player.playWhenReady = true
+                    }
+                    delay(50L)
+                } else {
+                    if (!inSteppedMode) {
+                        scrubPos = player.currentPosition.coerceAtLeast(0L)
+                        appliedForwardSpeed = 0f
+                        player.setPlaybackSpeed(1f)
+                        player.playWhenReady = false
+                        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                        inSteppedMode = true
+                        isSteppedScrubbing = true
+                    }
+                    val stepMs = SCRUB_TICK_MS * speed.multiplier *
+                        if (direction == SeekDirection.FORWARD) 1L else -1L
+                    val maxDuration = player.duration.takeIf { it > 0L } ?: duration
+                    val nextPos = if (maxDuration > 0L) {
+                        (scrubPos + stepMs).coerceIn(0L, maxDuration)
+                    } else {
+                        (scrubPos + stepMs).coerceAtLeast(0L)
+                    }
+                    if (nextPos != scrubPos) {
+                        scrubPos = nextPos
+                        position = scrubPos
+                        player.seekTo(scrubPos)
+                    }
+                    delay(SCRUB_TICK_MS)
+                }
+            }
+        } finally {
+            isSteppedScrubbing = false
+            player.setSeekParameters(SeekParameters.DEFAULT)
+            player.setPlaybackSpeed(1f)
+            if (inSteppedMode) {
+                position = scrubPos
+                player.seekTo(scrubPos)
+            }
+            player.playWhenReady = wasPlaying
+        }
+    }
+
+    LaunchedEffect(skipFeedback?.eventId) {
+        if (skipFeedback != null) {
+            delay(SKIP_COMBO_WINDOW_MS)
+            skipFeedback = null
+        }
+    }
+
+    LaunchedEffect(errorMessage) {
+        if (errorMessage != null) {
+            holdScrub = null
         }
     }
 
@@ -307,27 +438,43 @@ fun PlayerScreen(
     // Keep the position label in sync with the playback.
     LaunchedEffect(player) {
         while (true) {
-            position = player.currentPosition
+            if (!isSteppedScrubbing) {
+                position = player.currentPosition
+            }
             duration = player.duration.takeIf { it > 0 } ?: 0L
             delay(POSITION_UPDATE_MS)
         }
     }
 
     // Hide the controls again once playback is running.
-    LaunchedEffect(controlsVisible, isPlaying, panel) {
-        if (controlsVisible && isPlaying && panel == null) {
+    LaunchedEffect(controlsVisible, isPlaying, panel, holdScrub) {
+        if (controlsVisible && isPlaying && panel == null && holdScrub == null) {
             delay(CONTROLS_TIMEOUT_MS)
             controlsVisible = false
         }
     }
 
+    fun performSkip(direction: SeekDirection) {
+        val maxDuration = player.duration.takeIf { it > 0L } ?: duration
+        val basePos = player.currentPosition.coerceAtLeast(0L)
+        val deltaMs = if (direction == SeekDirection.FORWARD) SEEK_SKIP_MS else -SEEK_SKIP_MS
+        val target = if (maxDuration > 0L) {
+            (basePos + deltaMs).coerceIn(0L, maxDuration)
+        } else {
+            (basePos + deltaMs).coerceAtLeast(0L)
+        }
+        player.seekTo(target)
+        position = target
+        val previous = skipFeedback
+        val nextSeconds = if (previous?.direction == direction) previous.totalSeconds + 10 else 10
+        val nextEventId = (previous?.eventId ?: 0) + 1
+        skipFeedback = SkipFeedback(direction, nextSeconds, nextEventId)
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
-            .pointerInput(Unit) {
-                detectTapGestures { controlsVisible = !controlsVisible }
-            },
+            .background(Color.Black),
     ) {
         AndroidView(
             factory = { ctx ->
@@ -345,7 +492,27 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (isBuffering && errorMessage == null) {
+        PlayerGestureLayer(
+            canSeek = errorMessage == null && duration > 0L,
+            onSingleTap = { controlsVisible = !controlsVisible },
+            onSkip = ::performSkip,
+            onHoldStart = { direction, speed -> holdScrub = HoldScrubState(direction, speed) },
+            onHoldSpeedChange = { direction, speed -> holdScrub = HoldScrubState(direction, speed) },
+            onHoldEnd = { holdScrub = null },
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        SkipFeedbackOverlay(
+            skipFeedback = skipFeedback,
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        HoldSpeedOverlay(
+            holdScrub = holdScrub,
+            modifier = Modifier.align(Alignment.TopCenter),
+        )
+
+        if (isBuffering && errorMessage == null && holdScrub == null) {
             CircularProgressIndicator(
                 modifier = Modifier.align(Alignment.Center),
                 color = Color.White,
@@ -367,7 +534,10 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .padding(bottom = 72.dp)
                     .background(Color.Black.copy(alpha = 0.2f))
-                    .clickable { panel = null },
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { panel = null },
             )
         }
 
@@ -382,15 +552,20 @@ fun PlayerScreen(
                 isPlaying = isPlaying,
                 position = position,
                 duration = duration,
-                qualityLabel = videos.getOrNull(selectedVideoIndex)?.displayLabel(),
                 onPlayPause = { if (player.isPlaying) player.pause() else player.play() },
                 onSeek = {
                     isBuffering = true
                     player.seekTo(it)
                 },
-                onQualityClick = { panel = PlayerPanel.QUALITY },
-                onAudioClick = { panel = PlayerPanel.AUDIO },
-                onSubtitlesClick = { panel = PlayerPanel.SUBTITLES },
+                onQualityClick = {
+                    panel = if (panel == PlayerPanel.QUALITY) null else PlayerPanel.QUALITY
+                },
+                onAudioClick = {
+                    panel = if (panel == PlayerPanel.AUDIO) null else PlayerPanel.AUDIO
+                },
+                onSubtitlesClick = {
+                    panel = if (panel == PlayerPanel.SUBTITLES) null else PlayerPanel.SUBTITLES
+                },
                 onFullscreenClick = {
                     isFullscreen = !isFullscreen
                     onFullscreenChange(isFullscreen)
@@ -407,12 +582,20 @@ fun PlayerScreen(
             tracks = tracks,
             volume = volume,
             subtitleScale = subtitleScale,
+            videoSelection = videoSelection,
             audioSelection = audioSelection,
             subtitleSelection = subtitleSelection,
             externalAudioTracks = externalAudioTracks,
             selectedExternalAudioIndex = selectedExternalAudioIndex,
             onVideoSelected = { index ->
                 selectedVideoIndex = index
+                videoSelection = null
+                player.selectVideoTrack(tracks, -1, null)
+                panel = null
+            },
+            onVideoTrackSelected = { groupIndex, trackIndex ->
+                videoSelection = trackIndex?.let { groupIndex to it }
+                player.selectVideoTrack(tracks, groupIndex, trackIndex)
                 panel = null
             },
             onVolumeChange = {
@@ -445,6 +628,10 @@ private fun PlayerTopBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {}
             .background(
                 Brush.verticalGradient(
                     colors = listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent),
@@ -479,7 +666,6 @@ private fun PlayerBottomBar(
     isPlaying: Boolean,
     position: Long,
     duration: Long,
-    qualityLabel: String?,
     onPlayPause: () -> Unit,
     onSeek: (Long) -> Unit,
     onQualityClick: () -> Unit,
@@ -492,6 +678,10 @@ private fun PlayerBottomBar(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {}
             .background(
                 Brush.verticalGradient(
                     colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)),
@@ -536,15 +726,12 @@ private fun PlayerBottomBar(
                 fontSize = 12.sp,
             )
 
-            qualityLabel?.let { label ->
-                TextButton(onClick = onQualityClick) {
-                    Text(
-                        text = label,
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                    )
-                }
+            IconButton(onClick = onQualityClick) {
+                Icon(
+                    painter = painterResource(androidx.media3.ui.R.drawable.exo_ic_settings),
+                    contentDescription = stringResource(MR.strings.player_quality),
+                    tint = Color.White,
+                )
             }
 
             IconButton(onClick = onAudioClick) {
@@ -642,6 +829,352 @@ private fun SeekThumb() {
     )
 }
 
+@Composable
+private fun PlayerGestureLayer(
+    canSeek: Boolean,
+    onSingleTap: () -> Unit,
+    onSkip: (SeekDirection) -> Unit,
+    onHoldStart: (SeekDirection, HoldSpeed) -> Unit,
+    onHoldSpeedChange: (SeekDirection, HoldSpeed) -> Unit,
+    onHoldEnd: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val canSeekState = rememberUpdatedState(canSeek)
+    val onSingleTapState = rememberUpdatedState(onSingleTap)
+    val onSkipState = rememberUpdatedState(onSkip)
+    val onHoldStartState = rememberUpdatedState(onHoldStart)
+    val onHoldSpeedChangeState = rememberUpdatedState(onHoldSpeedChange)
+    val onHoldEndState = rememberUpdatedState(onHoldEnd)
+    val hapticState = rememberUpdatedState(LocalHapticFeedback.current)
+    val scope = rememberCoroutineScope()
+
+    val density = LocalDensity.current
+    val edgeMarginPx = with(density) { 16.dp.toPx() }
+    val minAvailableUpPx = with(density) { 36.dp.toPx() }
+    val defaultUpTo4xPx = with(density) { 44.dp.toPx() }
+    val defaultUpTo8xPx = with(density) { 96.dp.toPx() }
+    val defaultHysteresisPx = with(density) { 10.dp.toPx() }
+
+    Box(
+        modifier = modifier.pointerInput(Unit) {
+            var pendingSingleTapJob: Job? = null
+            var lastTapUpTimeMs = 0L
+            var lastTapSide: SeekDirection? = null
+            var comboSide: SeekDirection? = null
+            var comboExpiresAtMs = 0L
+
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = true)
+                val width = size.width
+                if (width <= 0) return@awaitEachGesture
+                val side = if (down.position.x < width / 2f) {
+                    SeekDirection.BACKWARD
+                } else {
+                    SeekDirection.FORWARD
+                }
+                val nowMs = down.uptimeMillis
+                val canSeekNow = canSeekState.value
+                val isDoubleTap = canSeekNow &&
+                    lastTapSide == side &&
+                    nowMs - lastTapUpTimeMs <= viewConfiguration.doubleTapTimeoutMillis
+                val isComboTap = canSeekNow &&
+                    comboSide == side &&
+                    nowMs <= comboExpiresAtMs
+
+                if (isDoubleTap || isComboTap) {
+                    pendingSingleTapJob?.cancel()
+                    pendingSingleTapJob = null
+                    lastTapUpTimeMs = 0L
+                    lastTapSide = null
+
+                    var latestY = down.position.y
+                    var lastChangeUptimeMs = down.uptimeMillis
+                    val holdCheck = withTimeoutOrNull(HOLD_THRESHOLD_MS) {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.count { it.pressed } > 1) {
+                                return@withTimeoutOrNull HoldCheckResult.CANCELLED
+                            }
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                                ?: return@withTimeoutOrNull HoldCheckResult.CANCELLED
+                            latestY = change.position.y
+                            lastChangeUptimeMs = change.uptimeMillis
+                            if (!change.pressed) {
+                                change.consume()
+                                return@withTimeoutOrNull HoldCheckResult.SKIP
+                            }
+                            val movedPx = hypot(
+                                change.position.x - down.position.x,
+                                change.position.y - down.position.y,
+                            )
+                            if (movedPx > viewConfiguration.touchSlop * 1.5f) {
+                                change.consume()
+                                return@withTimeoutOrNull HoldCheckResult.HOLD
+                            }
+                        }
+                        @Suppress("UNREACHABLE_CODE")
+                        HoldCheckResult.CANCELLED
+                    } ?: HoldCheckResult.HOLD
+
+                    when (holdCheck) {
+                        HoldCheckResult.CANCELLED -> {
+                            comboSide = null
+                            comboExpiresAtMs = 0L
+                        }
+                        HoldCheckResult.SKIP -> {
+                            onSkipState.value(side)
+                            comboSide = side
+                            comboExpiresAtMs = lastChangeUptimeMs + SKIP_COMBO_WINDOW_MS
+                        }
+                        HoldCheckResult.HOLD -> {
+                            comboSide = null
+                            comboExpiresAtMs = 0L
+                            val anchorY = down.position.y
+                            val availableUp = (anchorY - edgeMarginPx).coerceAtLeast(minAvailableUpPx)
+                            val upTo4x = minOf(defaultUpTo4xPx, availableUp * 0.45f)
+                            val upTo8x = minOf(defaultUpTo8xPx, availableUp * 0.90f)
+                            val hysteresisPx = minOf(defaultHysteresisPx, (upTo8x - upTo4x) * 0.3f)
+
+                            var currentSpeed = resolveHoldSpeed(
+                                current = HoldSpeed.X2,
+                                dragUpPx = anchorY - latestY,
+                                upTo4x = upTo4x,
+                                upTo8x = upTo8x,
+                                hysteresisPx = hysteresisPx,
+                            )
+                            hapticState.value.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onHoldStartState.value(side, currentSpeed)
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val tracked = event.changes.firstOrNull { it.id == down.id }
+                                    if (tracked == null || !tracked.pressed || tracked.isConsumed) break
+                                    tracked.consume()
+                                    val nextSpeed = resolveHoldSpeed(
+                                        current = currentSpeed,
+                                        dragUpPx = anchorY - tracked.position.y,
+                                        upTo4x = upTo4x,
+                                        upTo8x = upTo8x,
+                                        hysteresisPx = hysteresisPx,
+                                    )
+                                    if (nextSpeed != currentSpeed) {
+                                        currentSpeed = nextSpeed
+                                        hapticState.value.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onHoldSpeedChangeState.value(side, currentSpeed)
+                                    }
+                                }
+                            } finally {
+                                onHoldEndState.value()
+                            }
+                        }
+                    }
+                } else {
+                    pendingSingleTapJob?.cancel()
+                    pendingSingleTapJob = null
+                    comboSide = null
+                    comboExpiresAtMs = 0L
+
+                    val up = waitForUpOrCancellation()
+                    if (up != null) {
+                        if (canSeekState.value) {
+                            lastTapUpTimeMs = up.uptimeMillis
+                            lastTapSide = side
+                            pendingSingleTapJob = scope.launch {
+                                delay(viewConfiguration.doubleTapTimeoutMillis)
+                                lastTapUpTimeMs = 0L
+                                lastTapSide = null
+                                onSingleTapState.value()
+                            }
+                        } else {
+                            lastTapUpTimeMs = 0L
+                            lastTapSide = null
+                            onSingleTapState.value()
+                        }
+                    } else {
+                        lastTapUpTimeMs = 0L
+                        lastTapSide = null
+                    }
+                }
+            }
+        },
+    )
+}
+
+private fun resolveHoldSpeed(
+    current: HoldSpeed,
+    dragUpPx: Float,
+    upTo4x: Float,
+    upTo8x: Float,
+    hysteresisPx: Float,
+): HoldSpeed {
+    return when (current) {
+        HoldSpeed.X2 -> when {
+            dragUpPx >= upTo8x -> HoldSpeed.X8
+            dragUpPx >= upTo4x -> HoldSpeed.X4
+            else -> HoldSpeed.X2
+        }
+        HoldSpeed.X4 -> when {
+            dragUpPx >= upTo8x -> HoldSpeed.X8
+            dragUpPx < upTo4x - hysteresisPx -> HoldSpeed.X2
+            else -> HoldSpeed.X4
+        }
+        HoldSpeed.X8 -> when {
+            dragUpPx < upTo4x - hysteresisPx -> HoldSpeed.X2
+            dragUpPx < upTo8x - hysteresisPx -> HoldSpeed.X4
+            else -> HoldSpeed.X8
+        }
+    }
+}
+
+@Composable
+private fun SkipFeedbackOverlay(
+    skipFeedback: SkipFeedback?,
+    modifier: Modifier = Modifier,
+) {
+    var lastFeedback by remember { mutableStateOf<SkipFeedback?>(null) }
+    if (skipFeedback != null) {
+        lastFeedback = skipFeedback
+    }
+    val seconds = (skipFeedback ?: lastFeedback)?.totalSeconds ?: 10
+
+    Row(modifier = modifier) {
+        SkipSideBadge(
+            visible = skipFeedback?.direction == SeekDirection.BACKWARD,
+            direction = SeekDirection.BACKWARD,
+            seconds = seconds,
+            modifier = Modifier.weight(1f),
+        )
+        SkipSideBadge(
+            visible = skipFeedback?.direction == SeekDirection.FORWARD,
+            direction = SeekDirection.FORWARD,
+            seconds = seconds,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun SkipSideBadge(
+    visible: Boolean,
+    direction: SeekDirection,
+    seconds: Int,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.fillMaxHeight(),
+        contentAlignment = Alignment.Center,
+    ) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            ) {
+                if (direction == SeekDirection.BACKWARD) {
+                    Icon(
+                        painter = painterResource(androidx.media3.ui.R.drawable.exo_icon_rewind),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Text(
+                        text = "-${seconds}s",
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                } else {
+                    Text(
+                        text = "+${seconds}s",
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Icon(
+                        painter = painterResource(androidx.media3.ui.R.drawable.exo_icon_fastforward),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HoldSpeedOverlay(
+    holdScrub: HoldScrubState?,
+    modifier: Modifier = Modifier,
+) {
+    var lastHold by remember { mutableStateOf<HoldScrubState?>(null) }
+    if (holdScrub != null) {
+        lastHold = holdScrub
+    }
+    val displayed = holdScrub ?: lastHold
+
+    Box(
+        modifier = modifier
+            .statusBarsPadding()
+            .padding(top = 16.dp),
+    ) {
+        AnimatedVisibility(
+            visible = holdScrub != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            val active = displayed ?: return@AnimatedVisibility
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                if (active.direction == SeekDirection.BACKWARD) {
+                    Icon(
+                        painter = painterResource(androidx.media3.ui.R.drawable.exo_icon_rewind),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+
+                HoldSpeed.entries.forEach { speed ->
+                    val isSelected = active.speed == speed
+                    Text(
+                        text = "${speed.multiplier}x",
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.45f),
+                        fontSize = if (isSelected) 15.sp else 13.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    )
+                }
+
+                if (active.direction == SeekDirection.FORWARD) {
+                    Icon(
+                        painter = painterResource(androidx.media3.ui.R.drawable.exo_icon_fastforward),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+
+                Text(
+                    text = "↕",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 13.sp,
+                )
+            }
+        }
+    }
+}
+
 /** Small translucent panel shown above the control bar. */
 @Composable
 private fun PlayerOverlayPanel(
@@ -651,11 +1184,13 @@ private fun PlayerOverlayPanel(
     tracks: Tracks,
     volume: Float,
     subtitleScale: Float,
+    videoSelection: Pair<Int, Int>?,
     audioSelection: Pair<Int, Int>?,
     subtitleSelection: Pair<Int, Int>?,
     externalAudioTracks: List<Track>,
     selectedExternalAudioIndex: Int,
     onVideoSelected: (Int) -> Unit,
+    onVideoTrackSelected: (Int, Int?) -> Unit,
     onVolumeChange: (Float) -> Unit,
     onSubtitleScaleChange: (Float) -> Unit,
     onAudioTrackSelected: (Int, Int?) -> Unit,
@@ -670,13 +1205,18 @@ private fun PlayerOverlayPanel(
             .widthIn(max = 320.dp)
             .padding(end = 12.dp, bottom = 72.dp)
             .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(14.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {}
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .verticalScroll(rememberScrollState()),
     ) {
         when (panel) {
             PlayerPanel.QUALITY -> {
                 PanelTitle(stringResource(MR.strings.player_quality))
-                if (videos.isEmpty()) {
+                val videoTracks = tracks.videoOptions()
+                if (videos.isEmpty() && videoTracks.isEmpty()) {
                     PanelMessage(stringResource(MR.strings.player_no_streams))
                 }
                 videos.forEachIndexed { index, video ->
@@ -685,6 +1225,24 @@ private fun PlayerOverlayPanel(
                         selected = index == selectedVideoIndex,
                         onClick = { onVideoSelected(index) },
                     )
+                }
+                if (videoTracks.size > 1) {
+                    if (videos.isNotEmpty()) {
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.15f))
+                    }
+                    PlayerOptionRow(
+                        title = stringResource(MR.strings.player_default),
+                        selected = videoSelection == null,
+                        onClick = { onVideoTrackSelected(-1, null) },
+                    )
+                    videoTracks.forEach { track ->
+                        PlayerOptionRow(
+                            title = track.label,
+                            subtitle = track.detail,
+                            selected = videoSelection == (track.groupIndex to track.trackIndex),
+                            onClick = { onVideoTrackSelected(track.groupIndex, track.trackIndex) },
+                        )
+                    }
                 }
             }
 
@@ -868,6 +1426,32 @@ private fun Tracks.describe(): String {
         }
         "$type[$formats]"
     }
+}
+
+private fun Tracks.videoOptions(): List<TrackOption> {
+    return groups.flatMapIndexed { groupIndex, group ->
+        if (group.type != C.TRACK_TYPE_VIDEO) return@flatMapIndexed emptyList()
+        (0 until group.length).mapNotNull { trackIndex ->
+            val selected = group.isTrackSelected(trackIndex)
+            if (!selected && !group.isTrackSupported(trackIndex)) return@mapNotNull null
+            val format = group.getTrackFormat(trackIndex)
+            if (format.height <= 0) return@mapNotNull null
+            val bitrateKbps = format.bitrate.takeIf { it > 0 }?.let { "${it / 1000} kbps" }
+            TrackOption(
+                groupIndex = groupIndex,
+                trackIndex = trackIndex,
+                label = "${format.height}p",
+                detail = bitrateKbps,
+                selected = selected,
+            )
+        }
+    }.sortedWith(
+        compareByDescending<TrackOption> {
+            it.label.removeSuffix("p").toIntOrNull() ?: 0
+        }.thenByDescending {
+            it.detail?.removeSuffix(" kbps")?.toIntOrNull() ?: 0
+        },
+    )
 }
 
 private fun Tracks.audioOptions(): List<TrackOption> = options(C.TRACK_TYPE_AUDIO, isAudio = true)
@@ -1126,6 +1710,18 @@ internal fun eu.kanade.tachiyomi.animesource.model.Track.mimeType(): String {
         path.endsWith(".ttml", ignoreCase = true) -> MimeTypes.APPLICATION_TTML
         else -> MimeTypes.TEXT_VTT
     }
+}
+
+/** Selects the given video track, or lets the player pick automatically when [trackIndex] is null. */
+private fun ExoPlayer.selectVideoTrack(tracks: Tracks, groupIndex: Int, trackIndex: Int?) {
+    val builder = trackSelectionParameters.buildUpon()
+    if (trackIndex == null) {
+        builder.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+    } else {
+        val group = tracks.groups.getOrNull(groupIndex)?.mediaTrackGroup ?: return
+        builder.setOverrideForType(TrackSelectionOverride(group, trackIndex))
+    }
+    setTrackSelectionParameters(builder.build())
 }
 
 /** Selects the given audio track, or lets the player pick one when [trackIndex] is null. */

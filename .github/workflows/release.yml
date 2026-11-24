@@ -111,15 +111,9 @@ jobs:
             <!-->
 
             ### Improvements
-            - **Two-Phase 20-Chapter Batch Loading:** The initial refresh spinner now finishes right after the synopsis and first batch of latest chapters load, while older chapters stream smoothly in ~20-chapter batches using the bottom `"Loading more chapters…"` footer.
-            - **Live Chapter Counter & Clean Gap Display:** Shows loaded chapter progress in the footer and hides temporary `"Missing X chapters"` notices until all batches finish loading.
-            - **Auto-Resume Partial Lists & CAPTCHA Recovery:** When reopening a partially loaded Comix manga, harvests Batch 1 first to fetch any latest chapters before streaming remaining lower chapters in the footer, and displays `"Open WebView"` and `"Retry"` controls if verification is required (without automatic retry loops).
-
-            ### Bug Fixes
-            - **Comix.to Live Batch Streaming:** Fixed URL matching so progressive `[comix-progress]` batches and synopsis updates stream to the chapter list immediately (stopping the top spinner after Batch 1) instead of waiting for all pages to finish at once.
-            - **Early Hydration Guard & 20-Chapter Slicing:** Waits for rendered DOM pagination before starting gentle 1.5s Next-page turns and emits initial chapters in ≤20-chapter slices.
-            - **In-App Updater Version Comparison:** Fixed version checks ignoring 4th-segment hotfix numbers (e.g. `v0.2.x.y`) or miscomparing versions with different segment counts.
-            - **Gentle Native DOM Pagination:** Removed aggressive `limit=100` API and synthetic SSR probing in the built-in Comix.to extension, using native page turns with 1.5s pacing to reduce CAPTCHA triggers and initial load wait time.
+            - **Video Player Quality Icon & Adaptive Resolution Selector:** Replaced the text quality button in the bottom control bar with a dedicated settings gear icon opening the quality panel, adding adaptive HLS/DASH video resolution choices alongside stream selection.
+            - **Double-Tap Skip (-10s / +10s):** Double-tap the left or right half of the player screen to jump 10 seconds backward or forward, with rapid combo stacking and on-screen skip feedback.
+            - **Double-Tap & Hold Fast Scrub (2x / 4x / 8x):** Double-tap and hold the left or right half of the player to rewind or fast-forward continuously, and slide vertically while holding to shift between 2x, 4x, and 8x speeds.
 
             <!-->
 
