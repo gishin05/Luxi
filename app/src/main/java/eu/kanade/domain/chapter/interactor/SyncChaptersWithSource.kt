@@ -100,6 +100,7 @@ class SyncChaptersWithSource(
             rawSourceChapters: List<SChapter>,
             isFinal: Boolean,
             reconcileFinal: Boolean = false,
+            deleteMissing: Boolean = true,
         ): List<Chapter>? {
             if (!isFinal && rawSourceChapters.isEmpty()) return null
 
@@ -187,7 +188,7 @@ class SyncChaptersWithSource(
                 throw NoChaptersException()
             }
 
-            val removedChapters = if (isFinal) {
+            val removedChapters = if (isFinal && deleteMissing) {
                 dbChaptersByUrl.values.filterNot { it.url in seenSourceUrls }.also { removed ->
                     removed.mapNotNull { downloadManager.getQueuedDownloadOrNull(it.id) }
                         .takeIf { it.isNotEmpty() }

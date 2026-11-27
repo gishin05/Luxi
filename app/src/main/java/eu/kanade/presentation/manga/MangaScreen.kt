@@ -36,6 +36,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.animateFloatingActionButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -114,6 +115,7 @@ fun MangaScreen(
 
     onFilterButtonClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onLoadMoreChapters: () -> Unit,
     onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
@@ -169,6 +171,7 @@ fun MangaScreen(
             onCopyTagToClipboard = onCopyTagToClipboard,
             onFilterClicked = onFilterButtonClicked,
             onRefresh = onRefresh,
+            onLoadMoreChapters = onLoadMoreChapters,
             onRetryRemainingChapters = onRetryRemainingChapters,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
@@ -207,6 +210,7 @@ fun MangaScreen(
             onCopyTagToClipboard = onCopyTagToClipboard,
             onFilterButtonClicked = onFilterButtonClicked,
             onRefresh = onRefresh,
+            onLoadMoreChapters = onLoadMoreChapters,
             onRetryRemainingChapters = onRetryRemainingChapters,
             onContinueReading = onContinueReading,
             onSearch = onSearch,
@@ -282,6 +286,7 @@ private fun MangaScreenSmallImpl(
 
     onFilterClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onLoadMoreChapters: () -> Unit,
     onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
@@ -487,6 +492,7 @@ private fun MangaScreenSmallImpl(
                         chapters = listItem,
                         chapterBatchState = state.chapterBatchState,
                         loadedChapterCount = state.chapters.size,
+                        onLoadMoreChapters = onLoadMoreChapters,
                         onRetryRemainingChapters = onRetryRemainingChapters,
                         onWebViewClicked = onWebViewClicked,
                         isAnyChapterSelected = state.selectedChapters.isNotEmpty(),
@@ -527,6 +533,7 @@ fun MangaScreenLargeImpl(
 
     onFilterButtonClicked: () -> Unit,
     onRefresh: () -> Unit,
+    onLoadMoreChapters: () -> Unit,
     onRetryRemainingChapters: () -> Unit,
     onContinueReading: () -> Unit,
     onSearch: (query: String, global: Boolean) -> Unit,
@@ -723,6 +730,7 @@ fun MangaScreenLargeImpl(
                                 chapters = listItem,
                                 chapterBatchState = state.chapterBatchState,
                                 loadedChapterCount = state.chapters.size,
+                                onLoadMoreChapters = onLoadMoreChapters,
                                 onRetryRemainingChapters = onRetryRemainingChapters,
                                 onWebViewClicked = onWebViewClicked,
                                 isAnyChapterSelected = state.selectedChapters.isNotEmpty(),
@@ -790,6 +798,7 @@ private fun LazyListScope.sharedChapterItems(
     chapters: List<ChapterList>,
     chapterBatchState: MangaViewModel.ChapterBatchState,
     loadedChapterCount: Int,
+    onLoadMoreChapters: () -> Unit,
     onRetryRemainingChapters: () -> Unit,
     onWebViewClicked: (() -> Unit)?,
     isAnyChapterSelected: Boolean,
@@ -877,11 +886,18 @@ private fun LazyListScope.sharedChapterItems(
     }
 
     when (chapterBatchState) {
-        is MangaViewModel.ChapterBatchState.Loading -> {
+        is MangaViewModel.ChapterBatchState.ReadyToLoad,
+        is MangaViewModel.ChapterBatchState.Loading,
+        -> {
             item(
                 key = MangaScreenItem.CHAPTER_LOADING_FOOTER,
                 contentType = MangaScreenItem.CHAPTER_LOADING_FOOTER,
             ) {
+                if (chapterBatchState is MangaViewModel.ChapterBatchState.ReadyToLoad) {
+                    LaunchedEffect(chapterBatchState) {
+                        onLoadMoreChapters()
+                    }
+                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

@@ -67,6 +67,7 @@ class UpdateMangaFromRemote(
         fetchDetails: Boolean = false,
         fetchChapters: Boolean = false,
         manualFetch: Boolean = false,
+        loadMoreBatch: Boolean = false,
         fetchWindow: ClosedRange<Instant>? = null,
         onFirstBatchLoaded: (hasMore: Boolean) -> Unit = {},
     ): Result<RemoteMangaUpdate> {
@@ -77,6 +78,7 @@ class UpdateMangaFromRemote(
             fetchDetails = fetchDetails,
             fetchChapters = fetchChapters,
             manualFetch = manualFetch,
+            loadMoreBatch = loadMoreBatch,
             fetchWindow = fetchWindow,
             onFirstBatchLoaded = onFirstBatchLoaded,
         )
@@ -88,6 +90,7 @@ class UpdateMangaFromRemote(
         fetchDetails: Boolean = false,
         fetchChapters: Boolean = false,
         manualFetch: Boolean = false,
+        loadMoreBatch: Boolean = false,
         fetchWindow: ClosedRange<Instant>? = null,
         onFirstBatchLoaded: (hasMore: Boolean) -> Unit = {},
     ): Result<RemoteMangaUpdate> = withContext(Dispatchers.IO) {
@@ -96,7 +99,7 @@ class UpdateMangaFromRemote(
                 .sortedBy { it.sourceOrder }
             val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
             val knownChapters = if (isComix) {
-                if (!manualFetch && !isComixIncompleteHistory(manga, chapters)) {
+                if (loadMoreBatch || (!manualFetch && !isComixIncompleteHistory(manga, chapters))) {
                     chapters.map(Chapter::toSChapter)
                 } else {
                     emptyList()
@@ -109,7 +112,7 @@ class UpdateMangaFromRemote(
                 (fetchDetails || fetchChapters) &&
                 (isComix || manga.url.contains("/title/", ignoreCase = true))
 
-            suspend fun runOnce(): List<Chapter> {
+            suspend fun runOnce(): Pair<List<Chapter>, Boolean> {
                 val callbackMutex = Mutex()
                 var currentManga = manga
                 var syncSession: SyncChaptersWithSource.ProgressiveSession? = null
@@ -119,6 +122,7 @@ class UpdateMangaFromRemote(
                 val notifiedFirstBatch = AtomicBoolean(false)
                 var finalDetailsApplied = false
                 var finalChaptersCompleted = false
+                var latestHasMore = false
 
                 coroutineScope {
                     val progressChannel = if (listenComixProgress) Channel<String>(Channel.UNLIMITED) else null
@@ -145,6 +149,7 @@ class UpdateMangaFromRemote(
                                     }
                                     if (fetchChapters && parsed.chapters.isNotEmpty()) {
                                         receivedProgressChunks.set(true)
+                                        latestHasMore = parsed.hasMore
                                         val session = syncSession ?: syncChaptersWithSource.startSession(
                                             manga = currentManga,
                                             source = source,
@@ -196,6 +201,7 @@ class UpdateMangaFromRemote(
                                         rawSourceChapters = chunk,
                                         isFinal = isFinal,
                                         reconcileFinal = isFinal && receivedProgressChunks.get(),
+                                        deleteMissing = !isFinal || !latestHasMore,
                                     )
                                     if (synced != null) {
                                         newChapters = synced
@@ -210,13 +216,24 @@ class UpdateMangaFromRemote(
                         progressJob?.cancel()
                     }
                 }
-                if (isComix && fetchChapters && finalChaptersCompleted) {
+                val wasAlreadyComplete = manga.memo[COMIX_COMPLETE_MEMO_KEY]?.jsonPrimitive?.booleanOrNull == true
+                val remainingMore = if (isComix && fetchChapters) {
+                    if (loadMoreBatch) {
+                        latestHasMore
+                    } else {
+                        val dbChapters = chapterRepository.getChapterByMangaId(manga.id)
+                        latestHasMore && (!wasAlreadyComplete || isComixIncompleteHistory(manga, dbChapters))
+                    }
+                } else {
+                    false
+                }
+                if (isComix && fetchChapters && finalChaptersCompleted && !remainingMore) {
                     markComixChaptersComplete(manga.id)
                 }
-                return newChapters
+                return newChapters to remainingMore
             }
 
-            suspend fun executeUpdate(): List<Chapter> {
+            suspend fun executeUpdate(): Pair<List<Chapter>, Boolean> {
                 return if (isComix) {
                     ComixRequestGate.withPacing { runOnce() }
                 } else {
@@ -224,11 +241,17 @@ class UpdateMangaFromRemote(
                 }
             }
 
-            val newChapters = executeUpdate()
+            val (newChapters, hasMoreChapters) = executeUpdate()
 
             val updatedManga = mangaRepository.getMangaById(manga.id)
 
-            Result.success(RemoteMangaUpdate(manga = updatedManga, newChapters = newChapters))
+            Result.success(
+                RemoteMangaUpdate(
+                    manga = updatedManga,
+                    newChapters = newChapters,
+                    hasMoreChapters = hasMoreChapters,
+                ),
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

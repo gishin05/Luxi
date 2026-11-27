@@ -154,6 +154,7 @@ class MangaScreen(
             onTagSearch = { scope.launch { performGenreSearch(navigator, it, viewModel.source!!) } },
             onFilterButtonClicked = viewModel::showSettingsDialog,
             onRefresh = viewModel::fetchAllFromSource,
+            onLoadMoreChapters = viewModel::loadNextChapterBatch,
             onRetryRemainingChapters = viewModel::retryRemainingChapters,
             onContinueReading = {
                 continueReading(

@@ -254,7 +254,7 @@ class MangaViewModel(
     )
 
     private val isBatchLoading = chapterBatchState
-        .map { it is ChapterBatchState.Loading }
+        .map { it is ChapterBatchState.Loading || it is ChapterBatchState.ReadyToLoad }
         .distinctUntilChanged()
 
     private val processedChaptersFlow = combine(
@@ -507,6 +507,20 @@ class MangaViewModel(
         }
     }
 
+    fun loadNextChapterBatch() {
+        if (chapterBatchState.value !is ChapterBatchState.ReadyToLoad) return
+        viewModelScope.launch {
+            startRemoteFetch(
+                manga = getMangaAndChapters.awaitManga(mangaId),
+                manualFetch = true,
+                fetchDetails = false,
+                fetchChapters = true,
+                startInFooter = true,
+                loadMoreBatch = true,
+            )
+        }
+    }
+
     fun retryRemainingChapters() {
         viewModelScope.launch {
             startRemoteFetch(
@@ -515,6 +529,7 @@ class MangaViewModel(
                 fetchDetails = false,
                 fetchChapters = true,
                 startInFooter = true,
+                loadMoreBatch = true,
             )
         }
     }
@@ -525,6 +540,7 @@ class MangaViewModel(
         fetchDetails: Boolean,
         fetchChapters: Boolean,
         startInFooter: Boolean,
+        loadMoreBatch: Boolean = false,
     ) {
         val generation = ++fetchGeneration
         refreshJob?.cancel()
@@ -536,6 +552,7 @@ class MangaViewModel(
                 fetchDetails = fetchDetails,
                 fetchChapters = fetchChapters,
                 startInFooter = startInFooter,
+                loadMoreBatch = loadMoreBatch,
             )
         }
     }
@@ -547,6 +564,7 @@ class MangaViewModel(
         fetchDetails: Boolean,
         fetchChapters: Boolean,
         startInFooter: Boolean,
+        loadMoreBatch: Boolean = false,
     ) {
         val source = sourceManager.getOrStub(manga.source)
         val isComix = !source.isLocal() && ComixRequestGate.isComix(source)
@@ -566,13 +584,12 @@ class MangaViewModel(
                 fetchDetails = fetchDetails,
                 fetchChapters = fetchChapters,
                 manualFetch = manualFetch,
+                loadMoreBatch = loadMoreBatch,
                 onFirstBatchLoaded = { hasMore ->
                     if (fetchGeneration == generation) {
                         isRefreshingData.value = false
-                        chapterBatchState.value = if (hasMore) {
-                            ChapterBatchState.Loading
-                        } else {
-                            ChapterBatchState.Idle
+                        if (!startInFooter && hasMore) {
+                            chapterBatchState.value = ChapterBatchState.Loading
                         }
                     }
                 },
@@ -581,7 +598,14 @@ class MangaViewModel(
 
             if (fetchGeneration == generation) {
                 isRefreshingData.value = false
-                chapterBatchState.value = ChapterBatchState.Idle
+                chapterBatchState.value = if (
+                    update.hasMoreChapters &&
+                    (!loadMoreBatch || update.newChapters.isNotEmpty())
+                ) {
+                    ChapterBatchState.ReadyToLoad
+                } else {
+                    ChapterBatchState.Idle
+                }
             }
 
             if (manualFetch && !startInFooter) {
@@ -1348,6 +1372,7 @@ class MangaViewModel(
     @Immutable
     sealed interface ChapterBatchState {
         data object Idle : ChapterBatchState
+        data object ReadyToLoad : ChapterBatchState
         data object Loading : ChapterBatchState
         data class Error(
             val message: String,

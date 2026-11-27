@@ -110,10 +110,8 @@ jobs:
 
             <!-->
 
-            ### Improvements
-            - **Video Player Quality Icon & Adaptive Resolution Selector:** Replaced the text quality button in the bottom control bar with a dedicated settings gear icon opening the quality panel, adding adaptive HLS/DASH video resolution choices alongside stream selection.
-            - **Double-Tap Skip (-10s / +10s):** Double-tap the left or right half of the player screen to jump 10 seconds backward or forward, with rapid combo stacking and on-screen skip feedback.
-            - **Double-Tap & Hold Fast Scrub (2x / 4x / 8x):** Double-tap and hold the left or right half of the player to rewind or fast-forward continuously, and slide vertically while holding to shift between 2x, 4x, and 8x speeds.
+            ### Bug Fixes
+            - **On-Demand Chapter Batch Loading:** Chapter list batches now load one page at a time only when scrolling to the bottom of the chapter list, preventing continuous background page turns that triggered Cloudflare CAPTCHA errors while reading.
 
             <!-->
 
